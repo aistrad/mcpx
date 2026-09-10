@@ -25,7 +25,7 @@ func cleanIdempotencyFingerprint(operation string, payload map[string]any) strin
 	canonical["operation"] = operation
 	for key, value := range payload {
 		switch key {
-		case "idempotency_key", "user_confirmed", "confirmation_token", "client_request_id",
+		case "idempotency_key", "user_confirmed", "confirmation_key", "confirmation_token", "client_request_id",
 			"request_id", "purpose", "intent", "progress_summary", "execution_mode":
 			// These fields are retry/auth/audit metadata, not the effect itself.
 		default:

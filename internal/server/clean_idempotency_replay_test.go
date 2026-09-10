@@ -147,7 +147,7 @@ func TestCleanCoreMCPToolIdempotentReplayDoesNotRestartUpstream(t *testing.T) {
 		t.Fatalf("unannotated upstream call must require confirmation=%+v", waiting)
 	}
 	confirmedRequest := cloneMap(request)
-	confirmedRequest["user_confirmed"] = true
+	confirmedRequest["confirmation_key"] = mcpConfirmationKey(t, waiting)
 	confirmed := callEnvelope(t, rt.toolMCPTool, context.Background(), confirmedRequest)
 	if !statusOK(confirmed) {
 		t.Fatalf("confirmed mcp_tool call=%+v", confirmed)
@@ -217,7 +217,7 @@ func TestCleanCoreMCPToolIdempotentReplaySurvivesConfigRemoval(t *testing.T) {
 				t.Fatalf("unannotated upstream call must require confirmation=%+v", waiting)
 			}
 			confirmedRequest := cloneMap(request)
-			confirmedRequest["user_confirmed"] = true
+			confirmedRequest["confirmation_key"] = mcpConfirmationKey(t, waiting)
 			confirmed := callEnvelope(t, rt.toolMCPTool, context.Background(), confirmedRequest)
 			if !statusOK(confirmed) {
 				t.Fatalf("confirmed mcp_tool call=%+v", confirmed)
@@ -238,7 +238,6 @@ func TestCleanCoreMCPToolIdempotentReplaySurvivesConfigRemoval(t *testing.T) {
 			// environment: the removed/disabled server is not reachable.
 			fresh := cloneMap(request)
 			fresh["idempotency_key"] = "mcp-echo-fresh-config-2"
-			fresh["user_confirmed"] = true
 			changed := callEnvelope(t, rt.toolMCPTool, context.Background(), fresh)
 			if statusOK(changed) {
 				t.Fatalf("fresh call after config change must fail: %+v", changed)
@@ -272,13 +271,13 @@ func TestCleanCoreMCPToolConcurrentSameKeyRunsSingleUpstream(t *testing.T) {
 		"idempotency_key": "mcp-echo-concurrent-1",
 	}
 	// Establish the approval pending first: an unconfirmed call surfaces the
-	// confirmation gate, and only a user-confirmed retry may execute.
+	// confirmation gate, and only a retry carrying the returned key may execute.
 	waiting := callEnvelope(t, rt.toolMCPTool, context.Background(), request)
 	if waiting["status"] != "waiting_confirmation" {
 		t.Fatalf("unannotated upstream call must require confirmation=%+v", waiting)
 	}
 	confirmedRequest := cloneMap(request)
-	confirmedRequest["user_confirmed"] = true
+	confirmedRequest["confirmation_key"] = mcpConfirmationKey(t, waiting)
 	before := fakeMCPStartCount(t, startLog)
 	raw := make([]*mcp.CallToolResult, 2)
 	errs := make([]error, 2)
@@ -317,9 +316,9 @@ func TestCleanCoreMCPToolConcurrentSameKeyRunsSingleUpstream(t *testing.T) {
 }
 
 // TestCleanCoreExtensionFirstConfirmedCallStillRequiresGate ensures a first
-// call that carries user_confirmed=true cannot bypass the confirmation gate.
-// Only a prior unconfirmed call (which surfaced the gate) or a completed
-// replay may authorize execution; a just-claimed pending record must not.
+// call that carries an arbitrary confirmation_key cannot bypass the confirmation
+// gate. Only the key returned by the surfaced pending approval may authorize
+// execution; a caller-supplied key must not.
 func TestCleanCoreExtensionFirstConfirmedCallStillRequiresGate(t *testing.T) {
 	rt := newWorkspaceRuntime(t, "demo")
 	rt.cfg.Discovery.MCP.Enabled = true
@@ -338,15 +337,16 @@ func TestCleanCoreExtensionFirstConfirmedCallStillRequiresGate(t *testing.T) {
 	request := map[string]any{
 		"action": "call", "remote_session_id": remoteID, "purpose": "call the fake MCP",
 		"server": "fake", "tool": "echo", "arguments": map[string]any{"value": "one"},
-		"idempotency_key": "mcp-echo-first-confirmed-1", "user_confirmed": true,
+		"idempotency_key": "mcp-echo-first-confirmed-1", "confirmation_key": "ct_untrusted",
 	}
 	first := callEnvelope(t, rt.toolMCPTool, context.Background(), request)
 	if first["status"] != "waiting_confirmation" {
-		t.Fatalf("first user_confirmed=true call must still require confirmation=%+v", first)
+		t.Fatalf("first arbitrary confirmation_key must still require confirmation=%+v", first)
 	}
 
-	// The retry after the surfaced confirmation is authorized by the pending
-	// approval and executes normally.
+	// The retry after the surfaced confirmation is authorized only by the
+	// server-issued key bound to the pending approval.
+	request["confirmation_key"] = mcpConfirmationKey(t, first)
 	confirmed := callEnvelope(t, rt.toolMCPTool, context.Background(), request)
 	if !statusOK(confirmed) {
 		t.Fatalf("retry after confirmation must execute=%+v", confirmed)

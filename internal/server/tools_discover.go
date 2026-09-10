@@ -436,7 +436,12 @@ func (r *Runtime) extensionConfirmationGate(ctx context.Context, envReq envelope
 	}
 	contentKey := extensionConfirmationContentKey(principalID, operation, target, revision, envReq.Payload)
 	pending, pendingOK := r.pendingExtensionConfirmation(remote.ID, principalID, operation, contentKey)
-	if boolPayload(envReq.Payload, "user_confirmed") && (pendingOK || r.extensionReplayKnown(ctx, remote, principalID, operation, envReq.Payload)) {
+	if operation == "mcp_tool" {
+		confirmationKey := strings.TrimSpace(stringPayload(envReq.Payload, "confirmation_key"))
+		if pendingOK && confirmationKey != "" && confirmationKey == pending.ConfirmationToken {
+			return nil
+		}
+	} else if boolPayload(envReq.Payload, "user_confirmed") && (pendingOK || r.extensionReplayKnown(ctx, remote, principalID, operation, envReq.Payload)) {
 		return nil
 	}
 	if !pendingOK {
@@ -453,13 +458,19 @@ func (r *Runtime) extensionConfirmationGate(ctx context.Context, envReq envelope
 	}
 	data := map[string]any{
 		"target": target, "purpose": stringPayload(envReq.Payload, "purpose"), "risk": risk.publicData(),
-		"confirmation_required": true, "user_confirmed_required": true,
-		"summary": "该扩展调用可能产生副作用；请向用户展示目标、用途和风险，确认后以相同业务参数设置 user_confirmed=true 重试。",
+		"confirmation_required": true,
+	}
+	if operation == "mcp_tool" {
+		data["confirmation_key"] = pending.ConfirmationToken
+		data["summary"] = "该 MCP 调用可能产生副作用；请向用户展示目标、用途和风险，确认后携带 waiting_confirmation 返回的 confirmation_key，以相同业务参数重试。"
+	} else {
+		data["user_confirmed_required"] = true
+		data["summary"] = "该扩展调用可能产生副作用；请向用户展示目标、用途和风险，确认后以相同业务参数设置 user_confirmed=true 重试。"
 	}
 	response := envelope.Fail(envelope.StatusNeedConfirmation, envReq.RequestID, remote.WorkspaceName, data, "USER_CONFIRMATION_REQUIRED", "扩展调用等待用户语义确认")
 	response.RemoteSessionID = remote.ID
 	if response.Error != nil {
-		arguments := map[string]any{"action": "call", "remote_session_id": remote.ID, "purpose": stringPayload(envReq.Payload, "purpose"), "user_confirmed": true}
+		arguments := map[string]any{"action": "call", "remote_session_id": remote.ID, "purpose": stringPayload(envReq.Payload, "purpose")}
 		for _, key := range []string{"name", "server", "tool", "idempotency_key"} {
 			if value, ok := envReq.Payload[key]; ok {
 				arguments[key] = value
@@ -468,7 +479,13 @@ func (r *Runtime) extensionConfirmationGate(ctx context.Context, envReq envelope
 		// Extension arguments may contain a secret. Keep the target and require
 		// the caller to reuse its original arguments instead of echoing them
 		// into an error/recovery payload.
-		addRecoveryAction(&response, operation, "用户确认后使用相同扩展目标、原始 arguments 和用途重试，并设置 user_confirmed=true", arguments)
+		if operation == "mcp_tool" {
+			arguments["confirmation_key"] = pending.ConfirmationToken
+			addRecoveryAction(&response, operation, "用户确认后使用相同 MCP 目标、原始 arguments 和用途重试，并携带 waiting_confirmation 返回的 confirmation_key", arguments)
+		} else {
+			arguments["user_confirmed"] = true
+			addRecoveryAction(&response, operation, "用户确认后使用相同扩展目标、原始 arguments 和用途重试，并设置 user_confirmed=true", arguments)
+		}
 	}
 	result, _ := r.resultJSON(response)
 	_ = pending

@@ -53,6 +53,19 @@ func TestBooleanConfirmationRetryHintDoesNotMentionToken(t *testing.T) {
 	}
 }
 
+func TestConfirmationKeyRetryHintUsesReturnedKey(t *testing.T) {
+	response := Fail(StatusNeedConfirmation, "req_confirm", "demo", map[string]any{
+		"confirmation_required": true, "confirmation_key": "ct_example",
+	}, "USER_CONFIRMATION_REQUIRED", "MCP call requires confirmation")
+	if response.Error == nil {
+		t.Fatal("missing confirmation error")
+	}
+	hint, _ := response.Error.Details["retry_hint"].(string)
+	if !strings.Contains(hint, "confirmation_key") || strings.Contains(hint, "confirmation_token") || strings.Contains(hint, "user_confirmed=true") {
+		t.Fatalf("confirmation key hint=%q", hint)
+	}
+}
+
 func TestCommandFailuresUseExecutionTaxonomy(t *testing.T) {
 	for _, code := range []string{"COMMAND_NOT_FOUND", "PROCESS_EXIT", "COMMAND_FAILED", "OPERATION_FAILED"} {
 		t.Run(code, func(t *testing.T) {

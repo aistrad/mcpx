@@ -12,11 +12,15 @@ func pendingConfirmationItems(pending []approval.Pending) []map[string]any {
 			tool = "execute"
 		}
 		item := map[string]any{
-			"tool":                    tool,
-			"summary":                 pendingItem.Summary,
-			"workspace":               pendingItem.Workspace,
-			"created_at":              pendingItem.CreatedAt,
-			"user_confirmed_required": true,
+			"tool":       tool,
+			"summary":    pendingItem.Summary,
+			"workspace":  pendingItem.Workspace,
+			"created_at": pendingItem.CreatedAt,
+		}
+		if pendingItem.Tool == "mcp_tool" && pendingItem.ConfirmationToken != "" {
+			item["confirmation_key"] = pendingItem.ConfirmationToken
+		} else {
+			item["user_confirmed_required"] = true
 		}
 		if pendingItem.Command != "" {
 			item["command"] = pendingItem.Command

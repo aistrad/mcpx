@@ -11,7 +11,7 @@ func TestPendingConfirmationItemsPreservesExtensionToolName(t *testing.T) {
 	items := pendingConfirmationItems([]approval.Pending{
 		{Tool: "command_execute", Summary: "printf ok", CreatedAt: time.Unix(1, 0)},
 		{Tool: "skill_tool", Summary: "publish", CreatedAt: time.Unix(2, 0)},
-		{Tool: "mcp_tool", Summary: "dbx/query", CreatedAt: time.Unix(3, 0)},
+		{Tool: "mcp_tool", Summary: "dbx/query", ConfirmationToken: "ct_dbx", CreatedAt: time.Unix(3, 0)},
 	})
 	if len(items) != 3 {
 		t.Fatalf("pending confirmation items=%+v", items)
@@ -20,6 +20,12 @@ func TestPendingConfirmationItemsPreservesExtensionToolName(t *testing.T) {
 		if items[index]["tool"] != want {
 			t.Fatalf("pending confirmation item %d tool=%q want=%q", index, items[index]["tool"], want)
 		}
+	}
+	if items[0]["user_confirmed_required"] != true || items[1]["user_confirmed_required"] != true {
+		t.Fatalf("boolean confirmations changed unexpectedly: %+v", items)
+	}
+	if items[2]["confirmation_key"] != "ct_dbx" || items[2]["user_confirmed_required"] != nil {
+		t.Fatalf("mcp_tool pending confirmation must expose its key: %+v", items[2])
 	}
 }
 

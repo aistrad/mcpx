@@ -207,7 +207,7 @@ for line in sys.stdin:
 	}
 
 	confirmed := cloneMap(request)
-	confirmed["user_confirmed"] = true
+	confirmed["confirmation_key"] = mcpConfirmationKey(t, waiting)
 	failed := callRawToolResult(t, rt.toolHandlers["mcp_tool"], confirmed)
 	assertPassthroughResult(t, failed, remoteID, "upstream rejected after partial effect", true, false)
 	if failed.Meta["provider"] != "fake-failure" {

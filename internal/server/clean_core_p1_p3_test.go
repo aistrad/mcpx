@@ -478,7 +478,7 @@ for line in sys.stdin:
 		t.Fatalf("preflight must start exactly one upstream instance: before=%d after=%d", startsBeforeCall, startsAfterPreflight)
 	}
 	confirmedRequest := cloneMap(callRequest)
-	confirmedRequest["user_confirmed"] = true
+	confirmedRequest["confirmation_key"] = mcpConfirmationKey(t, waiting)
 	confirmed, err := rt.toolMCPTool(context.Background(), mcpresult.Request(confirmedRequest))
 	if err != nil {
 		t.Fatal(err)
@@ -793,6 +793,19 @@ func TestEphemeralPythonRuntimeExecutesAndKeepsReadableTaskID(t *testing.T) {
 	if statusOK(conflict) || errorCode(conflict) != "idempotency_conflict" {
 		t.Fatalf("changed runtime script reused idempotency result=%+v", conflict)
 	}
+}
+
+func mcpConfirmationKey(t *testing.T, response map[string]any) string {
+	t.Helper()
+	data, ok := response["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("confirmation response missing data: %+v", response)
+	}
+	key, _ := data["confirmation_key"].(string)
+	if strings.TrimSpace(key) == "" {
+		t.Fatalf("confirmation response missing confirmation_key: %+v", response)
+	}
+	return key
 }
 
 func cloneMap(input map[string]any) map[string]any {

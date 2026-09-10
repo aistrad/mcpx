@@ -242,8 +242,13 @@ func Fail(status Status, requestID, workspace string, data any, code, msg string
 	code = strings.ToUpper(code)
 	category, retryable, hint := classifyError(status, code)
 	details := map[string]any{}
-	if status == StatusNeedConfirmation && usesBooleanConfirmation(data) {
-		hint = "Ask the user for explicit confirmation, then retry the original tool with the same business arguments and user_confirmed=true."
+	if status == StatusNeedConfirmation {
+		switch {
+		case usesBooleanConfirmation(data):
+			hint = "Ask the user for explicit confirmation, then retry the original tool with the same business arguments and user_confirmed=true."
+		case usesKeyConfirmation(data):
+			hint = "Ask the user for explicit confirmation, then retry the original tool with the same business arguments and the confirmation_key returned by waiting_confirmation."
+		}
 	}
 	if hint != "" {
 		details["retry_hint"] = hint
@@ -270,6 +275,15 @@ func usesBooleanConfirmation(data any) bool {
 	}
 	_, hasToken := value["confirmation_token"]
 	return !hasToken
+}
+
+func usesKeyConfirmation(data any) bool {
+	value, ok := data.(map[string]any)
+	if !ok {
+		return false
+	}
+	key, _ := value["confirmation_key"].(string)
+	return strings.TrimSpace(key) != ""
 }
 
 func classifyError(status Status, code string) (category string, retryable bool, retryHint string) {
