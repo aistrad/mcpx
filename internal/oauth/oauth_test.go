@@ -53,7 +53,10 @@ func TestRefreshTokenRoundTrip(t *testing.T) {
 	if err := s.Registry.AddPreregistered("cli", []string{"http://127.0.0.1/cb"}, ""); err != nil {
 		t.Fatal(err)
 	}
-	refresh := s.IssueRefreshToken("cli", "https://mcp.example.com/mcp", "mcp")
+	refresh, err := s.IssueRefreshToken("cli", "https://mcp.example.com/mcp", "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if refresh == "" {
 		t.Fatal("no refresh token")
 	}
@@ -69,7 +72,10 @@ func TestRefreshTokenRoundTrip(t *testing.T) {
 		t.Fatal("expected old refresh token replay to fail")
 	}
 	// client binding
-	other := s.IssueRefreshToken("cli", "https://mcp.example.com/mcp", "mcp")
+	other, err := s.IssueRefreshToken("cli", "https://mcp.example.com/mcp", "mcp")
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, _, _, err := s.ExchangeRefreshToken(other, "not-cli", ""); err == nil {
 		t.Fatal("expected client mismatch to fail")
 	}

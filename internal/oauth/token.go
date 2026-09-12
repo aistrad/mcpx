@@ -28,9 +28,10 @@ type Server struct {
 	Registry    *Registry
 	CIMD        *CIMDResolver // Client ID Metadata Documents (ChatGPT / OpenAI)
 
-	mu      sync.Mutex
-	codes   map[string]*authCode
-	refresh map[string]*refreshGrant
+	mu                 sync.Mutex
+	codes              map[string]*authCode
+	refresh            map[string]*refreshGrant
+	refreshPersistPath string
 }
 
 type authCode struct {
@@ -244,9 +245,11 @@ func (s *Server) ExchangeCode(code, redirectURI, clientID, codeVerifier, resourc
 }
 
 // IssueRefreshToken creates an opaque refresh token for the client/resource.
-func (s *Server) IssueRefreshToken(clientID, resource, scope string) string {
+func (s *Server) IssueRefreshToken(clientID, resource, scope string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	before := cloneRefreshGrants(s.refresh)
 	s.pruneRefreshLocked()
 	if len(s.refresh) >= MaxRefreshTokens {
 		// Evict the oldest grant so a busy deployment cannot block reconnects.
@@ -261,14 +264,25 @@ func (s *Server) IssueRefreshToken(clientID, resource, scope string) string {
 			delete(s.refresh, oldestKey)
 		}
 	}
+	tok := s.issueRefreshTokenLocked(clientID, resource, scope)
+	if err := s.saveRefreshLocked(); err != nil {
+		s.refresh = before
+		return "", fmt.Errorf("persist refresh grant: %w", err)
+	}
+	return tok, nil
+}
+
+func (s *Server) issueRefreshTokenLocked(clientID, resource, scope string) string {
 	if scope == "" {
 		scope = DefaultScope
 	}
 	tok := TokenURLSafe(32)
-	for s.refresh[tok] != nil {
+	key := refreshTokenKey(tok)
+	for s.refresh[key] != nil {
 		tok = TokenURLSafe(32)
+		key = refreshTokenKey(tok)
 	}
-	s.refresh[tok] = &refreshGrant{
+	s.refresh[key] = &refreshGrant{
 		ClientID:  clientID,
 		Resource:  resource,
 		Scope:     scope,
@@ -279,12 +293,11 @@ func (s *Server) IssueRefreshToken(clientID, resource, scope string) string {
 
 // ExchangeRefreshToken rotates a refresh token and mints a new access token.
 func (s *Server) ExchangeRefreshToken(refreshToken, clientID, resource string) (string, int, string, error) {
+	key := refreshTokenKey(refreshToken)
 	s.mu.Lock()
-	g, ok := s.refresh[refreshToken]
-	if ok {
-		delete(s.refresh, refreshToken)
-	}
-	s.mu.Unlock()
+	defer s.mu.Unlock()
+
+	g, ok := s.refresh[key]
 	if !ok || time.Now().After(g.ExpiresAt) {
 		return "", 0, "", fmt.Errorf("invalid_grant")
 	}
@@ -306,7 +319,14 @@ func (s *Server) ExchangeRefreshToken(refreshToken, clientID, resource string) (
 	if err != nil {
 		return "", 0, "", err
 	}
-	next := s.IssueRefreshToken(clientID, res, g.Scope)
+
+	before := cloneRefreshGrants(s.refresh)
+	delete(s.refresh, key)
+	next := s.issueRefreshTokenLocked(clientID, res, g.Scope)
+	if err := s.saveRefreshLocked(); err != nil {
+		s.refresh = before
+		return "", 0, "", fmt.Errorf("persist refresh grant rotation: %w", err)
+	}
 	return tok, s.TokenTTL, next, nil
 }
 

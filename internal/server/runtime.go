@@ -317,12 +317,17 @@ func buildOAuthServer(cfg *config.Config) (*oauth.Server, error) {
 		}
 	}
 	srv := oauth.NewServer(password, strings.TrimSpace(cfg.Auth.OAuth.ServerURL), secret, config.OAuthTokenTTL(cfg.Auth.OAuth))
-	// Persist DCR clients so restart does not break ChatGPT "reconnect".
-	persist := filepath.Join(home, "oauth-clients.json")
-	if err := srv.Registry.SetPersistPath(persist); err != nil {
-		return nil, fmt.Errorf("persist OAuth clients at %s: %w", persist, err)
+	// Persist DCR clients and refresh grants so restart does not break ChatGPT reconnect.
+	clientPersist := filepath.Join(home, "oauth-clients.json")
+	if err := srv.Registry.SetPersistPath(clientPersist); err != nil {
+		return nil, fmt.Errorf("persist OAuth clients at %s: %w", clientPersist, err)
 	}
-	logging.With("component", "oauth").Info("oauth clients store", "path", persist)
+	logging.With("component", "oauth").Info("oauth clients store", "path", clientPersist)
+	refreshPersist := filepath.Join(home, "oauth-refresh-grants.json")
+	if err := srv.SetRefreshPersistPath(refreshPersist); err != nil {
+		return nil, fmt.Errorf("persist OAuth refresh grants at %s: %w", refreshPersist, err)
+	}
+	logging.With("component", "oauth").Info("oauth refresh grants store", "path", refreshPersist)
 	if cid := strings.TrimSpace(cfg.Auth.OAuth.ClientID); cid != "" {
 		uris := cfg.Auth.OAuth.RedirectURIs
 		if len(uris) == 0 {

@@ -348,7 +348,14 @@ func (h *Handler) HandleToken(w http.ResponseWriter, r *http.Request) {
 	if res == "" {
 		res = h.S.ResourceURL(h.S.EffectiveIssuer(OriginFromRequest(r, false)))
 	}
-	refreshToken := h.S.IssueRefreshToken(clientID, res, DefaultScope)
+	refreshToken, err := h.S.IssueRefreshToken(clientID, res, DefaultScope)
+	if err != nil {
+		logging.L().Error("oauth token",
+			"component", "oauth", "client_id", clientID,
+			"auth_method", authMethod, "error", err.Error())
+		writeOAuthError(w, http.StatusInternalServerError, "server_error", "failed to persist refresh token")
+		return
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"access_token":  tok,
 		"token_type":    "Bearer",
