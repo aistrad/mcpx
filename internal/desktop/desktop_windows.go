@@ -59,6 +59,13 @@ func Run(args []string) error {
 	// 从双击启动时本来就没有控制台，调用失败可以直接忽略。
 	_, _, _ = procFreeConsole.Call()
 
+
+	// MCPX 仍然是一个 CLI 可执行文件，直接把它编译成 windowsgui 会让
+	// `mcpx --help`、`mcpx stop` 等命令失去控制台输出。Desktop 因此保留
+	// Console subsystem，但在首次启动时为用户准备一个隐藏 PowerShell 的
+	// Windows 快捷方式。以后双击桌面的 MCPX 就不需要先开 PowerShell，
+	// 也不会留下一个大黑框。快捷方式创建失败不影响 Desktop 本身启动。
+	go func() { _, _ = ensureDesktopShortcut() }()
 	trayOnly := hasFlag(args, trayOnlyFlag)
 	desk := &desktopApp{api: newAPI()}
 

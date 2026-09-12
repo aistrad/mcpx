@@ -720,6 +720,11 @@ Windows 上可以用托盘常驻管理服务：
 ./bin/mcpx desktop -tray
 ```
 
+第一次启动 Desktop 后会自动在当前 Windows 用户的桌面创建/刷新 `MCPX.lnk`。
+快捷方式使用隐藏 PowerShell 启动 `mcpx.exe desktop`，因此以后可以直接双击
+桌面上的 **MCPX**，不需要先打开 PowerShell，也不会留下长期驻留的控制台黑框；
+`mcpx.exe` 本身仍保持 Console subsystem，以保证 CLI 命令的 stdout/stderr 正常。
+
 托盘负责服务状态指示与启动 / 停止 / 重启，图形界面提供三块内容：
 
 | 页面 | 内容 |
