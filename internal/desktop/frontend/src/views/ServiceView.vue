@@ -1,8 +1,16 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { api, type ConnectionConfig, type ServiceState } from '../api'
+import {
+  api,
+  type CloudflareConfig,
+  type CloudflareState,
+  type ConnectionConfig,
+  type ServiceState,
+} from '../api'
 
 const state = ref<ServiceState | null>(null)
+const cloudflare = ref<CloudflareState | null>(null)
+const cloudflareConfig = ref<CloudflareConfig | null>(null)
 const config = ref<ConnectionConfig | null>(null)
 const error = ref('')
 const busy = ref(false)
@@ -21,13 +29,28 @@ const statusText: Record<string, string> = {
 
 // 受托盘/CLI 管理的进程才可以停止或重启。端口冲突时的占用者不归我们管，
 // 也不该被我们停掉。
-const managed = computed(
-  () => state.value?.status === 'running' || state.value?.status === 'starting',
-)
+const managed = computed(() => {
+  const localManaged = state.value?.status === 'running' || state.value?.status === 'starting'
+  if (cloudflareConfig.value?.manage_with_mcpx === false) return localManaged
+  return localManaged || cloudflare.value?.status === 'running' || cloudflare.value?.status === 'starting'
+})
+
+const startSatisfied = computed(() => {
+  if (state.value?.status !== 'running') return false
+  if (cloudflareConfig.value?.manage_with_mcpx === false) return true
+  return cloudflare.value?.status === 'running'
+})
 
 async function refresh() {
   try {
-    state.value = await api.status()
+    const [serviceState, cloudflareState, tunnelConfig] = await Promise.all([
+      api.status(),
+      api.cloudflareStatus(),
+      api.getCloudflareConfig(),
+    ])
+    state.value = serviceState
+    cloudflare.value = cloudflareState
+    cloudflareConfig.value = tunnelConfig
   } catch (err) {
     error.value = (err as Error).message
   }
@@ -38,6 +61,7 @@ async function act(action: 'start' | 'stop' | 'restart') {
   error.value = ''
   try {
     state.value = await api.serviceAction(action)
+    cloudflare.value = await api.cloudflareStatus()
   } catch (err) {
     error.value = (err as Error).message
   } finally {
@@ -76,14 +100,14 @@ async function generateToken() {
   }
 }
 
-// 保存后不自动重启：正在跑的服务用的还是旧配置，由用户决定何时重启。
+// 保存后不自动重启：正在跑的 MCPX 使用的还是旧配置，由用户决定何时重启整套服务。
 async function saveConfig() {
   if (!config.value) return
   busy.value = true
   error.value = ''
   try {
     config.value = await api.putConfig(config.value)
-    savedHint.value = '已保存。改动在下次重启服务后生效。'
+    savedHint.value = '已保存。改动在下次重启 MCPX 后生效。'
     window.setTimeout(() => (savedHint.value = ''), 4000)
     await refresh()
   } catch (err) {
@@ -111,16 +135,29 @@ onUnmounted(() => window.clearInterval(timer))
         <span class="status-dot" :class="state.status"></span>
         <span class="status-headline">{{ statusText[state.status] }}</span>
         <span class="spacer"></span>
-        <button class="btn primary" :disabled="busy || state.status !== 'stopped'" @click="act('start')">
-          启动
+        <button
+          class="btn primary"
+          :disabled="busy || startSatisfied || state.status === 'conflict' || state.status === 'starting'"
+          @click="act('start')"
+        >
+          启动 MCPX
         </button>
         <button class="btn" :disabled="busy || !managed" @click="act('stop')">
-          停止
+          停止 MCPX
         </button>
         <button class="btn" :disabled="busy || !managed" @click="act('restart')">
-          重启
+          重启 MCPX
         </button>
       </div>
+
+      <p v-if="cloudflareConfig?.manage_with_mcpx !== false" class="hint">
+        “启动 MCPX”会一次启动完整服务：本地 MCP Runtime + 已配置的 Cloudflare Tunnel。
+        “停止 / 重启”同样作用于整套服务。
+      </p>
+      <p v-else class="hint">
+        Cloudflare 页已关闭 Tunnel 联动。“启动 / 停止 / 重启 MCPX”现在只管理本地 Runtime；
+        Cloudflare Tunnel 需要在 Cloudflare 页手动启动或停止。
+      </p>
 
       <p v-if="state.status === 'conflict'" class="hint" style="color: var(--warn)">
         {{ state.addr }} 已被另一个进程占用，但它不受托盘管理（daemon 状态文件里没有记录）。<br />
@@ -134,6 +171,10 @@ onUnmounted(() => window.clearInterval(timer))
         <dd>{{ state.auth_mode }}</dd>
         <dt>进程</dt>
         <dd>{{ state.pid > 0 ? `pid=${state.pid}` : '—' }}</dd>
+        <dt>Cloudflare Tunnel</dt>
+        <dd>{{ cloudflare?.status === 'running' ? `运行中 · pid=${cloudflare.pid}` : cloudflare?.status || '—' }}</dd>
+        <dt>公网 MCP</dt>
+        <dd>{{ cloudflare?.public_mcp_url || '—' }}</dd>
         <dt>运行时目录</dt>
         <dd>{{ state.home_dir }}</dd>
       </dl>
@@ -189,8 +230,16 @@ onUnmounted(() => window.clearInterval(timer))
           <button class="btn primary" :disabled="busy" @click="saveConfig">保存</button>
         </div>
 
+        <div v-if="config.auth_mode === 'oauth' || config.auth_mode === 'dual'" class="row" style="margin-top: 12px">
+          <label class="field" style="flex: 1">
+            OAuth server_url（公网 Origin）
+            <input v-model="config.oauth_server_url" type="text" placeholder="https://mcp.example.com" />
+          </label>
+        </div>
+
         <p class="hint">
-          只涉及监听地址与鉴权三项；安全策略、保留策略等仍需手改 config.yaml。<br />
+          只涉及监听地址、鉴权与 OAuth 公网 Origin；安全策略、保留策略等仍需手改 config.yaml。<br />
+          Cloudflare 页启用 OAuth 联动后，会自动维护这里的 server_url。<br />
           保存会整体重写 config.yaml 并<strong>丢失其中的注释</strong>，写入前会自动备份为
           config.yaml.bak。
         </p>

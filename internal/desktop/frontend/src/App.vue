@@ -3,12 +3,14 @@ import { ref } from 'vue'
 import ServiceView from './views/ServiceView.vue'
 import WorkspaceView from './views/WorkspaceView.vue'
 import LogsView from './views/LogsView.vue'
+import CloudflareView from './views/CloudflareView.vue'
 import { cycleTheme, THEME_LABEL, themeMode } from './theme'
 
-type TabKey = 'service' | 'workspace' | 'logs'
+type TabKey = 'service' | 'cloudflare' | 'workspace' | 'logs'
 
 const tabs: { key: TabKey; label: string }[] = [
   { key: 'service', label: '服务' },
+  { key: 'cloudflare', label: 'Cloudflare' },
   { key: 'workspace', label: 'Workspace' },
   { key: 'logs', label: '日志' },
 ]
@@ -37,6 +39,7 @@ const active = ref<TabKey>('service')
   </nav>
 
   <ServiceView v-if="active === 'service'" />
+  <CloudflareView v-else-if="active === 'cloudflare'" />
   <WorkspaceView v-else-if="active === 'workspace'" />
   <LogsView v-else />
 </template>
