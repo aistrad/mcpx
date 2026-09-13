@@ -3,8 +3,12 @@ package operation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// 无法证明外部效果已停止时使用中断状态，不能代签取消完成。
+var ErrEffectsUnconfirmed = errors.New("external effects are not confirmed stopped")
 
 // State is the durable lifecycle state of an asynchronous operation or step.
 type State string

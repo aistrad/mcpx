@@ -22,7 +22,7 @@ func TestMatchCommandDenyPrefixBlocksCommand(t *testing.T) {
 	}
 	for _, command := range []string{
 		"git status",
-		"git status && git diff",
+		"git status && git diff --no-ext-diff --no-textconv",
 		"go test ./...",
 		"echo hi",
 	} {
@@ -265,10 +265,10 @@ func TestMatchCommandAutoAllowReadonly(t *testing.T) {
 	for _, command := range []string{
 		"git status",
 		"git -C fanyi-cloud status --short && git -C fanyi-cloud-ui status --short",
-		"git status || git diff",
-		"git status; git diff",
-		"git log --oneline",
-		"git show HEAD",
+		"git status || git diff --no-ext-diff --no-textconv",
+		"git status; git diff --no-ext-diff --no-textconv",
+		"git log --no-ext-diff --no-textconv --oneline",
+		"git show --no-ext-diff --no-textconv HEAD",
 		"ls",
 		"ls -la",
 		"cat internal/server/tools.go",

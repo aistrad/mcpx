@@ -104,10 +104,15 @@ func (r *Runtime) waitForOperationTask(ctx context.Context, input operation.Exec
 	if !task.Wait(ctx) {
 		if ctx.Err() != nil {
 			if err := task.Kill(); err != nil {
-				return nil, fmt.Errorf("stop operation task: %w", err)
+				return nil, fmt.Errorf("%w: stop operation task: %v", operation.ErrEffectsUnconfirmed, err)
 			}
-			// Task.done 在 cmd.Wait 和输出关闭完成之后关闭。
-			task.Wait(context.Background())
+			// 完成信号包括 Windows Job 后代清空；无法有界核实时报告中断。
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			stopped := task.Wait(stopCtx)
+			stopCancel()
+			if !stopped || task.StatusView()["status"] == terminal.TaskFailed {
+				return nil, operation.ErrEffectsUnconfirmed
+			}
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("task %s did not reach a terminal state", taskID)

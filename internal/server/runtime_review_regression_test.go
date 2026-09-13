@@ -126,7 +126,20 @@ func TestReviewSDKConfirmationKeepsDAGWaiting(t *testing.T) {
 		t.Fatalf("submit: %+v", accepted)
 	}
 	waitArgs := map[string]any{"remote_session_id": s.ID, "operation_id": "confirm-dag", "action": "wait", "timeout_ms": 4000}
-	call("operation_manage", waitArgs)
+	wireWaiting := call("operation_manage", waitArgs)
+	wireData, ok := wireWaiting["data"].(map[string]any)
+	if !ok {
+		t.Fatalf("HTTP wait 无数据: %+v", wireWaiting)
+	}
+	wireSteps, ok := wireData["steps"].([]any)
+	if !ok || len(wireSteps) != 2 {
+		t.Fatalf("HTTP wait 无步骤: %+v", wireData)
+	}
+	wireA := wireSteps[0].(map[string]any)
+	wireToken, ok := wireA["confirmation_token"].(string)
+	if !ok || wireToken == "" || wireA["state"] != "waiting_confirmation" || wireSteps[1].(map[string]any)["state"] != "queued" {
+		t.Fatal("HTTP 等待回执缺恢复字段")
+	}
 	waiting, err := rt.operations.Get(ctx, "confirm-dag")
 	if err != nil || waiting.State != operation.StateWaitingConfirmation {
 		t.Fatalf("提前成功: %s %v", waiting.State, err)
@@ -137,7 +150,7 @@ func TestReviewSDKConfirmationKeepsDAGWaiting(t *testing.T) {
 	if _, err := os.Stat(output); !os.IsNotExist(err) {
 		t.Fatal("确认前启动子进程")
 	}
-	resumed := call("operation_manage", map[string]any{"remote_session_id": s.ID, "operation_id": "confirm-dag", "action": "resume", "step_id": "a", "confirmation_token": waiting.Steps[0].ConfirmationToken})
+	resumed := call("operation_manage", map[string]any{"remote_session_id": s.ID, "operation_id": "confirm-dag", "action": "resume", "step_id": "a", "confirmation_token": wireToken})
 	if resumed["status"] == "failed" {
 		t.Fatalf("resume: %+v", resumed)
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -198,6 +199,9 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		encoded, _ := json.Marshal(stored)
 		metadata, _ := json.Marshal(map[string]any{"edit_id": editID, "paths": editPaths(result)})
 		if err := r.idempotency.Complete(ctx, idemKey, fingerprint, idempotency.StateSucceeded, encoded, metadata); err != nil {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = r.idempotency.MarkInDoubt(recoveryCtx, idemKey, fingerprint, nil)
+			cancel()
 			return r.editIdempotencyInDoubt(envReq, session, idempotency.Record{Key: idemKey, Fingerprint: fingerprint, State: idempotency.StateInDoubt})
 		}
 	}

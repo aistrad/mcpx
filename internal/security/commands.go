@@ -370,8 +370,20 @@ func isReadonlyGit(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "status", "diff", "log", "show":
+	case "status":
 		return readonlyGitArguments(args[1:])
+	case "diff", "log", "show":
+		// 这些读取可默认启动仓库配置的外部转换器。只有调用者明确
+		// 禁用两个入口才自动放行；保留原 argv 与确认摘要，不静默改写。
+		noExternal, noTextconv := false, false
+		for _, arg := range args[1:] {
+			if arg == "--" {
+				break
+			}
+			noExternal = noExternal || arg == "--no-ext-diff"
+			noTextconv = noTextconv || arg == "--no-textconv"
+		}
+		return noExternal && noTextconv && readonlyGitArguments(args[1:])
 	}
 	return false
 }

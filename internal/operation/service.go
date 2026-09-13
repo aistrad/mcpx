@@ -631,7 +631,9 @@ func (s *Service) runStep(job stepJob) {
 	cancelled := active.cancelRequested
 	s.mu.Unlock()
 	state := StateSucceeded
-	if cancelled || errors.Is(result.Err, context.Canceled) {
+	if errors.Is(result.Err, ErrEffectsUnconfirmed) {
+		state = StateInterrupted
+	} else if cancelled || errors.Is(result.Err, context.Canceled) {
 		state = StateCancelled
 	} else if result.WaitingConfirmation {
 		state = StateWaitingConfirmation
@@ -728,11 +730,17 @@ func (s *Service) reconcile(operationID string) {
 	s.mu.Unlock()
 	if cancelled {
 		if canFinishCancelled {
-			if err := s.persistState(record, StateCancelled); err != nil {
+			terminalState := StateCancelled
+			for _, step := range record.Steps {
+				if step.State == StateInterrupted {
+					terminalState = StateInterrupted
+				}
+			}
+			if err := s.persistState(record, terminalState); err != nil {
 				return
 			}
 			if s.finishActive(operationID) {
-				s.emit(Event{OperationID: operationID, RemoteSessionID: record.RemoteSessionID, WorkspaceName: record.WorkspaceName, RequestID: record.RequestID, Type: operationEventCompleted, State: StateCancelled, Summary: "operation cancelled", CreatedAt: s.now().UTC()})
+				s.emit(Event{OperationID: operationID, RemoteSessionID: record.RemoteSessionID, WorkspaceName: record.WorkspaceName, RequestID: record.RequestID, Type: operationEventCompleted, State: terminalState, Summary: "operation " + string(terminalState), CreatedAt: s.now().UTC()})
 			}
 		}
 		return
