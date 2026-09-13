@@ -7,8 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"mcpx/internal/file"
 )
 
 func TestExactByteContractAndReadback(t *testing.T) {
@@ -16,6 +14,15 @@ func TestExactByteContractAndReadback(t *testing.T) {
 		"empty": {}, "no-lf": []byte("中文尾部"), "lf": []byte("中文\n"), "crlf": []byte("中文\r\n"),
 		"mixed": []byte("a\r\nb\nc\r"), "bom": append([]byte{239, 187, 191}, []byte("中文\r\n")...),
 		"utf16": {255, 254, 45, 78, 135, 101, 13, 0, 10, 0},
+	}
+	formats := map[string]ExpectedFormat{
+		"empty": {Charset: "utf-8", BOM: "none", LineEnding: "none"},
+		"no-lf": {Charset: "utf-8", BOM: "none", LineEnding: "none"},
+		"lf":    {Charset: "utf-8", BOM: "none", LineEnding: "LF"},
+		"crlf":  {Charset: "utf-8", BOM: "none", LineEnding: "CRLF"},
+		"mixed": {Charset: "utf-8", BOM: "none", LineEnding: "mixed"},
+		"bom":   {Charset: "utf-8", BOM: "utf-8", LineEnding: "CRLF"},
+		"utf16": {Charset: "utf-16le", BOM: "utf-16le", LineEnding: "CRLF"},
 	}
 	for name, content := range fixtures {
 		t.Run(name, func(t *testing.T) {
@@ -25,7 +32,7 @@ func TestExactByteContractAndReadback(t *testing.T) {
 				t.Fatal(err)
 			}
 			encoded := base64.StdEncoding.EncodeToString(content)
-			format := file.DetectFormat(content)
+			format := formats[name]
 			request := BatchRequest{WorkspaceRoot: root, Edits: []FileEdit{{Path: "file.txt", Operation: OpUpdate, BaseSHA256: hashBytes([]byte("old")), ContentBase64: &encoded, NewlinePolicy: "exact", ExpectedFormat: &ExpectedFormat{Charset: format.Charset, BOM: format.BOM, LineEnding: format.LineEnding}}}}
 			preview := request
 			preview.DryRun = true

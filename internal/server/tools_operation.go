@@ -117,6 +117,9 @@ func (r *Runtime) toolOperationManage(ctx context.Context, req *mcp.CallToolRequ
 	if action == "" {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "bad_request", "action is required")
 	}
+	if (action == "cancel" || action == "resume") && session.Role != "owner" && session.Role != "editor" {
+		return r.terminalError(envReq, session.ID, session.WorkspaceName, "forbidden", "operation mutation requires an owner or editor session")
+	}
 	if r.operations == nil {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "operation_unavailable", "asynchronous operations are unavailable")
 	}

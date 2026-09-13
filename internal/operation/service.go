@@ -45,6 +45,8 @@ type Service struct {
 	reconcileMu    sync.Mutex
 	active         map[string]*activeOperation
 	jobs           chan stepJob
+	pending        []stepJob
+	wake           chan struct{}
 	workspaceLocks map[string]*sync.RWMutex
 	sink           EventSink
 	stop           chan struct{}
@@ -91,11 +93,14 @@ func New(db *sql.DB, workers int, sink EventSink) (*Service, error) {
 		now:            time.Now,
 		active:         make(map[string]*activeOperation),
 		jobs:           make(chan stepJob, workers*2),
+		wake:           make(chan struct{}, 1),
 		workspaceLocks: make(map[string]*sync.RWMutex),
 		sink:           sink,
 		stop:           make(chan struct{}),
 		closed:         make(chan struct{}),
 	}
+	s.wg.Add(1)
+	go s.dispatch()
 	for i := 0; i < workers; i++ {
 		s.wg.Add(1)
 		go s.worker()
@@ -373,6 +378,8 @@ func (s *Service) Result(ctx context.Context, operationID, stepID, cursor string
 
 // Cancel prevents new steps and cancels all currently running steps.
 func (s *Service) Cancel(ctx context.Context, operationID string) (Record, error) {
+	s.reconcileMu.Lock()
+	defer func() { s.reconcileMu.Unlock(); s.reconcile(operationID) }()
 	record, err := s.Get(ctx, operationID)
 	if err != nil {
 		return Record{}, err
@@ -405,18 +412,22 @@ func (s *Service) Cancel(ctx context.Context, operationID string) (Record, error
 		}
 		return s.Get(ctx, operationID)
 	}
-	s.reconcile(operationID)
 	return s.Get(ctx, operationID)
 }
 
 // Resume requeues one waiting-confirmation step after checking its token.
 func (s *Service) Resume(ctx context.Context, operationID, stepID, confirmationToken string, executor Executor) (Record, error) {
+	s.reconcileMu.Lock()
+	defer s.reconcileMu.Unlock()
 	if strings.TrimSpace(stepID) == "" || strings.TrimSpace(confirmationToken) == "" {
 		return Record{}, ErrConfirmation
 	}
 	record, err := s.Get(ctx, operationID)
 	if err != nil {
 		return Record{}, err
+	}
+	if record.State.terminal() {
+		return Record{}, ErrAlreadyCompleted
 	}
 	var target StepRecord
 	found := false
@@ -431,6 +442,36 @@ func (s *Service) Resume(ctx context.Context, operationID, stepID, confirmationT
 	}
 	s.mu.Lock()
 	active := s.active[operationID]
+	if active != nil && active.cancelRequested {
+		s.mu.Unlock()
+		return Record{}, ErrAlreadyCompleted
+	}
+	if active == nil && executor == nil {
+		s.mu.Unlock()
+		return Record{}, ErrNotActive
+	}
+	s.mu.Unlock()
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Record{}, err
+	}
+	defer tx.Rollback()
+	updated, err := tx.ExecContext(ctx, `UPDATE operation_steps SET state='queued', confirmation_token='', error_json='{}', completed_at=NULL
+		WHERE operation_id=? AND step_id=? AND state='waiting_confirmation' AND confirmation_token=?
+		AND EXISTS (SELECT 1 FROM operations WHERE id=? AND state NOT IN ('succeeded','failed','interrupted','cancelled'))`, operationID, stepID, confirmationToken, operationID)
+	if err != nil {
+		return Record{}, err
+	}
+	if count, err := updated.RowsAffected(); err != nil || count != 1 {
+		return Record{}, ErrConfirmation
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE operations SET state='queued', completed_at=NULL WHERE id=? AND state NOT IN ('succeeded','failed','interrupted','cancelled')`, operationID); err != nil {
+		return Record{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Record{}, err
+	}
+	s.mu.Lock()
 	if active == nil {
 		if executor == nil {
 			s.mu.Unlock()
@@ -446,15 +487,10 @@ func (s *Service) Resume(ctx context.Context, operationID, stepID, confirmationT
 	stepSpec := active.specs[stepID]
 	stepSpec.Arguments = argumentsOrEmpty(cloneStepArguments(stepSpec.Arguments))
 	stepSpec.Arguments["confirmation_token"] = confirmationToken
+	stepSpec.Arguments["user_confirmed"] = true
 	active.specs[stepID] = stepSpec
 	active.enqueued[stepID] = false
 	s.mu.Unlock()
-	if _, err := s.db.ExecContext(ctx, `UPDATE operation_steps SET state = 'queued', confirmation_token = '', error_json = '{}', completed_at = NULL WHERE operation_id = ? AND step_id = ?`, operationID, stepID); err != nil {
-		return Record{}, err
-	}
-	if _, err := s.db.ExecContext(ctx, `UPDATE operations SET state = 'queued', completed_at = NULL WHERE id = ?`, operationID); err != nil {
-		return Record{}, err
-	}
 	s.enqueueReady(operationID)
 	return s.Get(ctx, operationID)
 }
@@ -496,13 +532,39 @@ func recoverInterrupted(db *sql.DB, now int64) error {
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.Exec(`UPDATE operation_steps SET state='interrupted', completed_at=? WHERE state IN ('queued','running')`, now); err != nil {
+	// 只有纯等待 DAG 可恢复。包含失联运行步骤的整图必须一致中断。
+	if _, err := tx.Exec(`UPDATE operations SET state='interrupted', completed_at=? WHERE state IN ('queued','running') OR
+		(state='waiting_confirmation' AND EXISTS (SELECT 1 FROM operation_steps WHERE operation_id=operations.id AND state='running'))`, now); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`UPDATE operations SET state='interrupted', completed_at=? WHERE state IN ('queued','running')`, now); err != nil {
+	if _, err := tx.Exec(`UPDATE operation_steps SET state='interrupted', completed_at=? WHERE state IN ('queued','running','waiting_confirmation')
+		AND operation_id IN (SELECT id FROM operations WHERE state='interrupted')`, now); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// 独立调度者承担有界 worker channel 的背压，worker 不在排入后继时阻塞。
+func (s *Service) dispatch() {
+	defer s.wg.Done()
+	for {
+		s.mu.Lock()
+		var output chan stepJob
+		var job stepJob
+		if len(s.pending) > 0 {
+			output, job = s.jobs, s.pending[0]
+		}
+		s.mu.Unlock()
+		select {
+		case output <- job:
+			s.mu.Lock()
+			s.pending = s.pending[1:]
+			s.mu.Unlock()
+		case <-s.wake:
+		case <-s.stop:
+			return
+		}
+	}
 }
 
 func (s *Service) worker() {
@@ -518,42 +580,54 @@ func (s *Service) worker() {
 }
 
 func (s *Service) runStep(job stepJob) {
+	s.reconcileMu.Lock()
 	s.mu.Lock()
 	active := s.active[job.operationID]
-	if active == nil {
+	if active == nil || active.cancelRequested {
 		s.mu.Unlock()
+		s.reconcileMu.Unlock()
 		return
 	}
 	step, ok := active.specs[job.stepID]
 	s.mu.Unlock()
 	if !ok {
+		s.reconcileMu.Unlock()
 		return
 	}
 	if !s.markStepRunning(job.operationID, job.stepID) {
+		s.reconcileMu.Unlock()
 		return
-	}
-	lock := s.workspaceLock(activeSpecWorkspace(s, job.operationID))
-	if step.Exclusive {
-		lock.Lock()
-		defer lock.Unlock()
-	} else {
-		lock.RLock()
-		defer lock.RUnlock()
 	}
 	stepCtx, cancel := context.WithCancel(active.ctx)
 	s.mu.Lock()
 	active.stepCancel[job.stepID] = cancel
+	executor := active.executor
 	s.mu.Unlock()
+	s.reconcileMu.Unlock()
+	lock := s.workspaceLock(activeSpecWorkspace(s, job.operationID))
+	if step.Exclusive {
+		lock.Lock()
+	} else {
+		lock.RLock()
+	}
 	s.emit(Event{OperationID: job.operationID, StepID: job.stepID, RemoteSessionID: activeSpecSession(s, job.operationID), WorkspaceName: activeSpecWorkspace(s, job.operationID), Tool: step.Tool, Type: operationEventStepStarted, State: StateRunning, Summary: "operation step started", CreatedAt: s.now().UTC()})
-	result := executeStepSafely(active.executor, stepCtx, ExecuteInput{
-		OperationID: job.operationID, StepID: job.stepID,
-		RequestID:       stepRequestID(s, job.operationID, job.stepID),
-		RemoteSessionID: activeSpecSession(s, job.operationID), WorkspaceName: activeSpecWorkspace(s, job.operationID),
-		Purpose: activeSpecPurpose(s, job.operationID), Tool: step.Tool, Arguments: argumentsOrEmpty(step.Arguments),
-	})
+	result := ExecuteResult{Err: stepCtx.Err()}
+	if result.Err == nil {
+		result = executeStepSafely(executor, stepCtx, ExecuteInput{
+			OperationID: job.operationID, StepID: job.stepID,
+			RequestID:       stepRequestID(s, job.operationID, job.stepID),
+			RemoteSessionID: activeSpecSession(s, job.operationID), WorkspaceName: activeSpecWorkspace(s, job.operationID),
+			Purpose: activeSpecPurpose(s, job.operationID), Tool: step.Tool, Arguments: argumentsOrEmpty(step.Arguments),
+		})
+	}
 	cancel()
+	if step.Exclusive {
+		lock.Unlock()
+	} else {
+		lock.RUnlock()
+	}
+	s.reconcileMu.Lock()
 	s.mu.Lock()
-	delete(active.stepCancel, job.stepID)
 	cancelled := active.cancelRequested
 	s.mu.Unlock()
 	state := StateSucceeded
@@ -568,7 +642,17 @@ func (s *Service) runStep(job stepJob) {
 	if result.Err != nil {
 		errorJSON = errorValue(result.Err)
 	}
-	if !s.finishStep(job.operationID, job.stepID, state, result.Result, errorJSON, result.ConfirmationToken) {
+	if state == StateWaitingConfirmation && result.ConfirmationToken == "" {
+		result.ConfirmationToken = newID("confirm_")
+	}
+	finished := s.finishStep(job.operationID, job.stepID, state, result.Result, errorJSON, result.ConfirmationToken)
+	s.mu.Lock()
+	if finished {
+		delete(active.stepCancel, job.stepID)
+	}
+	s.mu.Unlock()
+	s.reconcileMu.Unlock()
+	if !finished {
 		return
 	}
 	s.emit(Event{OperationID: job.operationID, StepID: job.stepID, RemoteSessionID: activeSpecSession(s, job.operationID), WorkspaceName: activeSpecWorkspace(s, job.operationID), Tool: step.Tool, Type: operationEventStepCompleted, State: state, Summary: "operation step " + string(state), CreatedAt: s.now().UTC()})
@@ -616,13 +700,11 @@ func (s *Service) enqueueReady(operationID string) {
 			jobs = append(jobs, stepJob{operationID: operationID, stepID: step.ID})
 		}
 	}
+	s.pending = append(s.pending, jobs...)
 	s.mu.Unlock()
-	for _, job := range jobs {
-		select {
-		case s.jobs <- job:
-		case <-s.stop:
-			return
-		}
+	select {
+	case s.wake <- struct{}{}:
+	default:
 	}
 }
 

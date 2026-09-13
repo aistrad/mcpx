@@ -79,6 +79,8 @@ type BatchRequest struct {
 	// DryRun validates and builds the exact result without invoking any
 	// filesystem mutation or pre-write hook.
 	DryRun bool
+	// ValidatePath 检查实际物理路径，在准备及最终写入核对阶段均调用。
+	ValidatePath func(absolutePath string) error
 }
 
 // FileResult is the outcome for one path.

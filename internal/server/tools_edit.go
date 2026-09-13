@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -12,6 +13,7 @@ import (
 	"mcpx/internal/audit"
 	"mcpx/internal/edit"
 	"mcpx/internal/envelope"
+	"mcpx/internal/file"
 	"mcpx/internal/idempotency"
 	"mcpx/internal/observation"
 	"mcpx/internal/remotesession"
@@ -62,6 +64,22 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		}
 	}
 	effective := r.effectiveConfig(session.WorkspacePath)
+	physicalRoot, err := file.Resolve(session.WorkspacePath, ".")
+	if err != nil {
+		return r.editToolError(envReq, session, err)
+	}
+	validatePath := func(absolute string) error {
+		relative, err := filepath.Rel(physicalRoot, absolute)
+		if err != nil {
+			return err
+		}
+		for _, path := range []string{filepath.ToSlash(relative), filepath.ToSlash(absolute)} {
+			if security.MatchFile(effective.Security.Files, path) == security.Deny {
+				return &edit.ApplyError{Code: "FILE_DENIED", Message: "file denied by policy", Path: relative, Index: -1}
+			}
+		}
+		return nil
+	}
 	for _, item := range edits {
 		for _, path := range []string{item.Path, item.NewPath} {
 			if path != "" && security.MatchFile(effective.Security.Files, path) == security.Deny {
@@ -81,7 +99,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		apply = value
 	}
 	if !apply {
-		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: session.WorkspacePath, Edits: edits, DryRun: true})
+		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: session.WorkspacePath, Edits: edits, DryRun: true, ValidatePath: validatePath})
 		if dryRunErr != nil {
 			return r.editToolError(envReq, session, dryRunErr)
 		}
@@ -134,6 +152,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	result, err := edit.ApplyBatchWithHook(edit.BatchRequest{
 		WorkspaceRoot: session.WorkspacePath,
 		Edits:         edits,
+		ValidatePath:  validatePath,
 	}, func(prepared edit.BatchResult) error {
 		preparedResult = prepared
 		stored := storedEditResult{EditID: editID, Result: prepared}

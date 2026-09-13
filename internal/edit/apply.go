@@ -73,6 +73,11 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 				Path: path, Index: fileIndex, Err: ErrInvalidInput,
 			}
 		}
+		if req.ValidatePath != nil {
+			if err := req.ValidatePath(abs); err != nil {
+				return BatchResult{}, err
+			}
+		}
 		seenPaths[abs] = fileIndex
 
 		p := prepared{edit: item, absPath: abs}
@@ -194,6 +199,11 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 				}
 			}
 			seenPaths[absNew] = fileIndex
+			if req.ValidatePath != nil {
+				if err := req.ValidatePath(absNew); err != nil {
+					return BatchResult{}, err
+				}
+			}
 			if _, err := os.Stat(absNew); err == nil {
 				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "rename target already exists", Path: newPath, Index: fileIndex, Err: ErrTargetExists}
 			}
@@ -288,6 +298,7 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			return BatchResult{}, &ApplyError{Code: "STALE_REVISION", Message: "file physical path changed before write", Path: p.edit.Path, Index: index, Err: ErrStale}
 		}
 		if p.edit.Operation == OpCreate {
+			// 最终物理路径策略不依赖调用者传入的字面路径。
 			if _, err := os.Lstat(currentPath); !os.IsNotExist(err) {
 				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "create target appeared before write", Path: p.edit.Path, Index: index, Err: ErrTargetExists}
 			}
@@ -300,6 +311,11 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 				return BatchResult{}, err
 			}
 		}
+		if req.ValidatePath != nil {
+			if err := req.ValidatePath(currentPath); err != nil {
+				return BatchResult{}, err
+			}
+		}
 		if p.edit.Operation == OpRename {
 			currentNew, err := file.Resolve(req.WorkspaceRoot, p.edit.NewPath)
 			if err != nil || currentNew != p.absNew {
@@ -307,6 +323,11 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			}
 			if _, err := os.Lstat(currentNew); !os.IsNotExist(err) {
 				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "rename target appeared before write", Path: p.edit.NewPath, Index: index, Err: ErrTargetExists}
+			}
+			if req.ValidatePath != nil {
+				if err := req.ValidatePath(currentNew); err != nil {
+					return BatchResult{}, err
+				}
 			}
 		}
 	}

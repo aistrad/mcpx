@@ -276,7 +276,13 @@ func detectFormat(content []byte) Format {
 // DetectFormat classifies source bytes without reading from the workspace.
 // Edit validation uses the same classifier as reads so clients see one
 // consistent charset and line-ending contract across read and edit tools.
-func DetectFormat(content []byte) Format { return detectFormat(content) }
+func DetectFormat(content []byte) Format {
+	// 使用读取路径的解码分类识别 UTF-16 换行，摘要仍由原始字节计算。
+	if _, format, err := DecodeText(content); err == nil {
+		return format
+	}
+	return detectFormat(content)
+}
 
 // DecodeText decodes a supported source file into model-facing Unicode text
 // while preserving the original charset/BOM and decoded line-ending metadata.

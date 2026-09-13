@@ -371,9 +371,38 @@ func isReadonlyGit(args []string) bool {
 	}
 	switch args[0] {
 	case "status", "diff", "log", "show":
-		return allReadonlyArguments(args[1:])
+		return readonlyGitArguments(args[1:])
 	}
 	return false
+}
+
+// Git 支持长选项缩写及外部 diff/textconv。未知选项必须交回显式策略，
+// 不能仅凭安全字符将带文件输出或程序执行的参数自动当作只读。
+func readonlyGitArguments(args []string) bool {
+	paths := false
+	for _, arg := range args {
+		if !safeReadonlyArgument(arg) {
+			return false
+		}
+		if arg == "--" {
+			paths = true
+			continue
+		}
+		if paths || !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch arg {
+		case "--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2",
+			"--oneline", "--stat", "--shortstat", "--numstat", "--name-only", "--name-status",
+			"--summary", "--check", "--cached", "--staged", "--no-ext-diff", "--no-textconv",
+			"--no-color", "--color=never", "--patch", "-p", "--no-patch", "--raw", "--abbrev-commit",
+			"--graph", "--decorate", "--no-decorate", "--all", "--reverse", "--date-order", "--topo-order":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func allReadonlyArguments(args []string) bool {
