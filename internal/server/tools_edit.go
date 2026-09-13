@@ -372,6 +372,20 @@ func parseCleanEdits(payload map[string]any) ([]edit.FileEdit, error) {
 		return nil, err
 	}
 	var edits []edit.FileEdit
+	var rawEdits []map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &rawEdits); err != nil {
+		return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "invalid edits payload", Index: -1, Err: edit.ErrInvalidInput}
+	}
+	for index, item := range rawEdits {
+		if _, exact := item["content_base64"]; !exact {
+			continue
+		}
+		for _, key := range []string{"content", "replacements", "range"} {
+			if _, present := item[key]; present {
+				return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "content_base64 cannot be combined with logical edit fields", Index: index, Err: edit.ErrInvalidInput}
+			}
+		}
+	}
 	if err := json.Unmarshal(encoded, &edits); err != nil {
 		return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "invalid edits payload", Index: -1, Err: edit.ErrInvalidInput}
 	}
@@ -381,6 +395,9 @@ func parseCleanEdits(payload map[string]any) ([]edit.FileEdit, error) {
 	for i := range edits {
 		if strings.TrimSpace(edits[i].Operation) == "" {
 			return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: fmt.Sprintf("edits[%d].operation required", i), Index: i, Err: edit.ErrInvalidInput}
+		}
+		if (strings.TrimSpace(edits[i].Operation) == edit.OpUpdate || strings.TrimSpace(edits[i].Operation) == edit.OpRename) && strings.TrimSpace(edits[i].BaseSHA256) == "" {
+			return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: fmt.Sprintf("edits[%d].base_sha256 required for update/rename", i), Path: edits[i].Path, Index: i, Err: edit.ErrInvalidInput}
 		}
 	}
 	return edits, nil

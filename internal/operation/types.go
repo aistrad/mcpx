@@ -35,6 +35,7 @@ type StepSpec struct {
 
 // SubmitSpec describes an operation and all of its steps.
 type SubmitSpec struct {
+	RunID           string
 	ID              string
 	RemoteSessionID string
 	WorkspaceName   string
@@ -45,6 +46,9 @@ type SubmitSpec struct {
 
 // Record is the public operation state assembled from durable records.
 type Record struct {
+	RunID           string
+	StateSequence   int64
+	StateEventID    string
 	ID              string
 	RemoteSessionID string
 	WorkspaceName   string
@@ -109,6 +113,9 @@ type Executor func(context.Context, ExecuteInput) ExecuteResult
 
 // Event is emitted after an operation lifecycle transition.
 type Event struct {
+	RunID           string
+	StateSequence   int64
+	StateEventID    string
 	OperationID     string
 	StepID          string
 	RemoteSessionID string

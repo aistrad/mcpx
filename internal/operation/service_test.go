@@ -149,11 +149,11 @@ func TestServiceCancelsRunningStep(t *testing.T) {
 	if _, err := service.Cancel(context.Background(), record.ID); err != nil {
 		t.Fatal(err)
 	}
-	final, err := service.Get(context.Background(), record.ID)
+	final, timedOut, err := service.Wait(context.Background(), record.ID, time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if final.State != StateCancelled {
+	if timedOut || final.State != StateCancelled {
 		t.Fatalf("state=%s", final.State)
 	}
 }

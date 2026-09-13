@@ -1,6 +1,7 @@
 package source
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
@@ -318,7 +319,7 @@ func SearchWith(root string, opts SearchOptions, allowed func(string) bool) (Sea
 	seen := 0
 	page := make([]Match, 0, opts.Limit+1)
 	complete := false
-	shaCache := map[string]string{}
+	queryBytes := []byte(opts.Query)
 	for _, path := range filePaths {
 		absolute, _ := file.Resolve(root, path)
 		info, err := os.Stat(absolute)
@@ -329,28 +330,30 @@ func SearchWith(root string, opts SearchOptions, allowed func(string) bool) (Sea
 		if err != nil || !utf8.Valid(content) {
 			continue
 		}
+		// 字面量未命中时无需分行；忽略大小写和正则仍使用原匹配语义。
+		if !opts.Regex && opts.CaseSensitive && !bytes.Contains(content, queryBytes) {
+			continue
+		}
 		lines := strings.Split(strings.ReplaceAll(string(content), "\r\n", "\n"), "\n")
 		if len(lines) > 0 && lines[len(lines)-1] == "" {
 			lines = lines[:len(lines)-1]
 		}
 		var fileSHA string
-		if opts.IncludeSHA256 && info.Size() <= 4<<20 {
-			if cached, ok := shaCache[path]; ok {
-				fileSHA = cached
-			} else {
-				fileSHA = digest(content)
-				shaCache[path] = fileSHA
-			}
-		}
 		for lineNumber, line := range lines {
-			indices := literalIndicesWithCase(line, opts.Query, opts.CaseSensitive)
+			var indices [][]int
 			if opts.Regex {
 				indices = expression.FindAllStringIndex(line, -1)
+			} else {
+				indices = literalIndicesWithCase(line, opts.Query, opts.CaseSensitive)
 			}
 			for _, index := range indices {
 				seen++
 				if seen <= start {
 					continue
+				}
+				// 每个实际返回匹配的文件只计算一次原始字节哈希。
+				if opts.IncludeSHA256 && fileSHA == "" {
+					fileSHA = digest(content)
 				}
 				text := line
 				if len(text) > 500 {

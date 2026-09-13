@@ -409,6 +409,12 @@ func (r *Runtime) observeOperationEvent(event operation.Event) {
 	if event.State == operation.StateQueued || event.State == operation.StateRunning {
 		status = "running"
 	}
+	var lifecycle json.RawMessage
+	if event.StateEventID != "" {
+		lifecycle, _ = json.Marshal(map[string]any{"operation_id": event.OperationID,
+			"run_id":         event.RunID,
+			"state_event_id": event.StateEventID, "state_sequence": event.StateSequence, "state": event.State})
+	}
 	_ = r.observation.Record(context.Background(), observation.Event{
 		Workspace:         event.WorkspaceName,
 		RemoteSessionID:   event.RemoteSessionID,
@@ -421,6 +427,7 @@ func (r *Runtime) observeOperationEvent(event operation.Event) {
 		Type:              typeName,
 		Status:            status,
 		Summary:           event.Summary,
+		Output:            lifecycle,
 		CreatedAt:         event.CreatedAt,
 	})
 }

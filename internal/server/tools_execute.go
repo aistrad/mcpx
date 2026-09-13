@@ -58,7 +58,14 @@ func (r *Runtime) cleanExecuteReadyForIdempotency(ctx context.Context, req *mcp.
 		return false
 	}
 	command := strings.TrimSpace(stringPayload(envReq.Payload, "command"))
-	payloadDigest := ""
+	argvSpec, argvDisplay, argvDigest, argvErr := executeArgv(envReq.Payload)
+	if argvErr != nil {
+		return false
+	}
+	if argvSpec != nil {
+		command = argvDisplay
+	}
+	payloadDigest := argvDigest
 	if runtimeSpec != nil {
 		command = runtimeSpec.Command
 		payloadDigest = runtimeSpec.ScriptSHA256
