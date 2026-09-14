@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"mcpx/internal/winproc"
@@ -16,7 +18,7 @@ const (
 )
 
 func configureBackgroundProcess(cmd *exec.Cmd) {
-	// 复用统一的无窗口配置，再保留 daemon 所需的独立进程组。
+	// 复用新版统一的无窗口配置，再保留 daemon 所需的独立进程组。
 	winproc.ConfigureNoWindow(cmd)
 	cmd.SysProcAttr.CreationFlags |= createNewProcessGroup
 }
@@ -39,25 +41,69 @@ func terminateBackgroundProcess(pid int, executable string, timeout time.Duratio
 		// 进程发信号——那是别人的进程。
 		return false, nil
 	}
-	process, err := os.FindProcess(pid)
-	if err != nil {
-		return false, fmt.Errorf("find daemon pid %d: %w", pid, err)
-	}
-	if err := process.Kill(); err != nil {
-		return false, fmt.Errorf("kill daemon pid %d: %w", pid, err)
+	if timeout <= 0 {
+		timeout = 3 * time.Second
 	}
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) {
-		alive, _, err := windowsBackgroundProcessState(pid, executable)
+
+	// First ask Windows to terminate the complete process tree without /F.
+	// taskkill may return success before the target has actually disappeared,
+	// so success of the command itself is not sufficient: verify the PID.
+	gracefulOutput, gracefulErr := runWindowsTaskkill(pid, false)
+	graceDeadline := time.Now().Add(750 * time.Millisecond)
+	if graceDeadline.After(deadline) {
+		graceDeadline = deadline
+	}
+	if gone, err := waitWindowsProcessGone(pid, executable, graceDeadline); err != nil {
+		return false, err
+	} else if gone {
+		return true, nil
+	}
+
+	// If the process still exists, escalate to /F regardless of whether the
+	// first taskkill command returned success. This handles detached console
+	// processes that acknowledge termination but remain alive.
+	forceOutput, forceErr := runWindowsTaskkill(pid, true)
+	if gone, err := waitWindowsProcessGone(pid, executable, deadline); err != nil {
+		return false, err
+	} else if gone {
+		return true, nil
+	}
+
+	if forceErr != nil {
+		return false, fmt.Errorf("force-stop daemon pid %d: %v (%s); graceful stop: %v (%s)",
+			pid, forceErr, strings.TrimSpace(forceOutput), gracefulErr, strings.TrimSpace(gracefulOutput))
+	}
+	return false, fmt.Errorf("daemon pid %d still alive after taskkill /T /F", pid)
+}
+
+func runWindowsTaskkill(pid int, force bool) (string, error) {
+	args := []string{"/PID", strconv.Itoa(pid), "/T"}
+	if force {
+		args = append(args, "/F")
+	}
+	command := exec.Command("taskkill", args...)
+	winproc.ConfigureNoWindow(command)
+	output, err := command.CombinedOutput()
+	return strings.TrimSpace(string(output)), err
+}
+
+func waitWindowsProcessGone(pid int, executable string, deadline time.Time) (bool, error) {
+	for {
+		alive, matches, err := windowsBackgroundProcessState(pid, executable)
 		if err != nil {
 			return false, err
 		}
-		if !alive {
+		// !matches also means the original daemon is gone and Windows reused the
+		// PID. Treat that as success and never touch the replacement process.
+		if !alive || !matches {
 			return true, nil
+		}
+		if !time.Now().Before(deadline) {
+			return false, nil
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	return false, fmt.Errorf("daemon pid %d did not exit after kill", pid)
 }
 
 func discoverBackgroundProcesses(executable string) ([]int, error) {
