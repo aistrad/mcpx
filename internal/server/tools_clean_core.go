@@ -122,6 +122,9 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 		"client_request_id":            stringSchema("客户端幂等键"),
 		"include_instructions_content": booleanSchema("是否内联返回指令内容"),
 		"include_project_tasks":        booleanSchema("是否返回项目任务"),
+		"run_id":                       stringSchema("显式请求 Git 身份快照的稳定运行 ID"),
+		"git_identity_path":            stringSchema("Git root 相对 Workspace 的路径；run_id 存在时默认根目录"),
+		"remote_name":                  stringSchema("身份快照的远端名称，默认 origin"),
 		"mode":                         enumSchema("关闭模式；出现时省略 action 也会推导 close", "closed", "archived"),
 	}, nil, sessionToolAnnotation), r.toolSession)
 
@@ -174,11 +177,22 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 		"type":                 "object",
 		"additionalProperties": false,
 		"properties": map[string]any{
-			"path":        path,
-			"operation":   enumSchema("文件操作；用户提出删除、移除或清理时请使用 move_out(action=prepare)，确认后再 move_out(action=submit)", "create", "update", "rename"),
-			"base_sha256": stringSchema("读取时获得的文件 sha256"),
-			"content":     stringSchema("新文件的完整内容"),
-			"new_path":    stringSchema("rename 的目标路径"),
+			"path":           path,
+			"operation":      enumSchema("文件操作；用户提出删除、移除或清理时请使用 move_out(action=prepare)，确认后再 move_out(action=submit)", "create", "update", "rename"),
+			"base_sha256":    stringSchema("update/rename 必填读取时获得的文件 sha256；create 通过目标不存在保护"),
+			"content":        stringSchema("新文件的完整内容"),
+			"content_base64": stringSchema("完整目标字节的标准 Base64；仅 create/update，须 newline_policy=exact，与 content/replacements/range 互斥"),
+			"newline_policy": enumSchema("preserve 使用现有逻辑文本编辑；exact 原样写入 content_base64 字节，不转换编码/BOM/换行", "preserve", "exact"),
+			"expected_format": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"description": "约束最终写入字节；不执行格式转换，不匹配则写入前拒绝",
+				"properties": map[string]any{
+					"charset":     enumSchema("预期编码", "utf-8", "utf-16le", "utf-16be"),
+					"bom":         enumSchema("预期 BOM", "none", "utf-8", "utf-16le", "utf-16be"),
+					"line_ending": enumSchema("预期换行", "none", "LF", "CRLF", "CR", "mixed"),
+				}, "required": []string{"charset", "bom", "line_ending"},
+			},
+			"new_path": stringSchema("rename 的目标路径"),
 			"replacements": arraySchema(map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -201,6 +215,10 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 			},
 		},
 		"required": []string{"path", "operation"},
+		"allOf": []map[string]any{{
+			"if":   map[string]any{"properties": map[string]any{"operation": map[string]any{"enum": []string{"update", "rename"}}}},
+			"then": map[string]any{"required": []string{"base_sha256"}},
+		}},
 	}
 	r.addTool(s, cleanCoreTool("edit", desc["edit"], map[string]any{
 		"remote_session_id": remoteSession,

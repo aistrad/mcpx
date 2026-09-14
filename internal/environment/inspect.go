@@ -287,6 +287,14 @@ func inspectFilesystem(workspacePath string) *FilesystemInfo {
 }
 
 func inspectToolchains(ctx context.Context) map[string]ToolchainInfo {
+	return inspectToolchainsWith(ctx, exec.LookPath, commandOutput)
+}
+
+func inspectToolchainsWith(
+	ctx context.Context,
+	lookPath func(string) (string, error),
+	output func(context.Context, string, ...string) string,
+) map[string]ToolchainInfo {
 	commands := map[string][]string{
 		"go": {"go", "version"}, "git": {"git", "--version"}, "node": {"node", "--version"},
 		"npm": {"npm", "--version"}, "pnpm": {"pnpm", "--version"}, "yarn": {"yarn", "--version"},
@@ -299,13 +307,29 @@ func inspectToolchains(ctx context.Context) map[string]ToolchainInfo {
 	}
 	sort.Strings(names)
 	result := make(map[string]ToolchainInfo, len(names))
+	type probeResult struct {
+		name string
+		info ToolchainInfo
+	}
+	probes := make(chan probeResult, len(names))
+	pending := 0
 	for _, name := range names {
 		command := commands[name]
-		if _, err := exec.LookPath(command[0]); err != nil {
+		if _, err := lookPath(command[0]); err != nil {
 			result[name] = ToolchainInfo{}
 			continue
 		}
-		result[name] = ToolchainInfo{Available: true, Version: commandOutput(ctx, command[0], command[1:]...)}
+		pending++
+		go func(name string, command []string) {
+			probes <- probeResult{
+				name: name,
+				info: ToolchainInfo{Available: true, Version: output(ctx, command[0], command[1:]...)},
+			}
+		}(name, command)
+	}
+	for range pending {
+		probe := <-probes
+		result[probe.name] = probe.info
 	}
 	return result
 }

@@ -302,11 +302,27 @@ func TestPublicCatalogIsExactlyTheCleanCoreContract(t *testing.T) {
 		required := branch["required"].([]any)
 		properties := branch["properties"].(map[string]any)
 		action := properties["action"].(map[string]any)
+		for _, key := range []string{"remote_session_id", "action"} {
+			if properties[key] == nil || !containsSchemaRequired(required, key) {
+				t.Fatalf("客户端独立投影 oneOf 分支会丢失必需参数 %s", key)
+			}
+		}
 		switch {
 		case containsSchemaRequired(required, "operation_id"):
 			sawSingle = true
+			for _, key := range []string{"operation_id", "timeout_ms", "step_id", "cursor", "confirmation_token"} {
+				if properties[key] == nil {
+					t.Fatalf("单操作分支缺少可调用参数 %s", key)
+				}
+			}
+			if properties["operation_ids"] != nil {
+				t.Fatal("单操作分支暴露了互斥批量身份")
+			}
 		case containsSchemaRequired(required, "operation_ids"):
 			sawBatch = true
+			if properties["operation_ids"] == nil || properties["operation_id"] != nil {
+				t.Fatal("批量分支身份不完整或不互斥")
+			}
 			enum, _ := action["enum"].([]any)
 			if !reflect.DeepEqual(enum, []any{"status", "result"}) && !reflect.DeepEqual(enum, []any{"result", "status"}) {
 				t.Fatalf("batch actions=%v", enum)

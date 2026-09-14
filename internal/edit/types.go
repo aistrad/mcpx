@@ -2,7 +2,10 @@
 // the clean-core MCP surface.
 package edit
 
-import "errors"
+import (
+	"errors"
+	"mcpx/internal/file"
+)
 
 // MaxChangedLines is the hard cap on total unified-diff changed lines
 // (insertions + deletions) for one ApplyBatch call.
@@ -43,13 +46,30 @@ type LineRange struct {
 
 // FileEdit is one path-level operation inside a batch.
 type FileEdit struct {
-	Path         string        `json:"path"`
-	Operation    string        `json:"operation"`
-	BaseSHA256   string        `json:"base_sha256,omitempty"`
-	Content      string        `json:"content,omitempty"`
-	NewPath      string        `json:"new_path,omitempty"`
-	Replacements []Replacement `json:"replacements,omitempty"`
-	Range        *LineRange    `json:"range,omitempty"`
+	Path           string          `json:"path"`
+	Operation      string          `json:"operation"`
+	BaseSHA256     string          `json:"base_sha256,omitempty"`
+	Content        string          `json:"content,omitempty"`
+	NewPath        string          `json:"new_path,omitempty"`
+	Replacements   []Replacement   `json:"replacements,omitempty"`
+	Range          *LineRange      `json:"range,omitempty"`
+	ContentBase64  *string         `json:"content_base64,omitempty"`
+	NewlinePolicy  string          `json:"newline_policy,omitempty"`
+	ExpectedFormat *ExpectedFormat `json:"expected_format,omitempty"`
+}
+
+// ExpectedFormat 明确约束本次写入后的字节格式，不触发编码或换行转换。
+type ExpectedFormat struct {
+	Charset    string `json:"charset"`
+	BOM        string `json:"bom"`
+	LineEnding string `json:"line_ending"`
+}
+
+type ByteReadback struct {
+	ByteLength int         `json:"byte_length"`
+	SHA256     string      `json:"sha256"`
+	Format     file.Format `json:"format"`
+	TailHex    string      `json:"tail_hex"`
 }
 
 // BatchRequest is one edit tool call worth of work.
@@ -59,18 +79,21 @@ type BatchRequest struct {
 	// DryRun validates and builds the exact result without invoking any
 	// filesystem mutation or pre-write hook.
 	DryRun bool
+	// ValidatePath 检查实际物理路径，在准备及最终写入核对阶段均调用。
+	ValidatePath func(absolutePath string) error
 }
 
 // FileResult is the outcome for one path.
 type FileResult struct {
-	Path           string `json:"path"`
-	NewPath        string `json:"new_path,omitempty"`
-	Operation      string `json:"operation"`
-	OriginalSHA256 string `json:"original_sha256,omitempty"`
-	NewSHA256      string `json:"new_sha256,omitempty"`
-	ChangedLines   int    `json:"changed_lines"`
-	Diff           string `json:"diff,omitempty"`
-	Deleted        bool   `json:"deleted,omitempty"`
+	Path           string        `json:"path"`
+	NewPath        string        `json:"new_path,omitempty"`
+	Operation      string        `json:"operation"`
+	OriginalSHA256 string        `json:"original_sha256,omitempty"`
+	NewSHA256      string        `json:"new_sha256,omitempty"`
+	ChangedLines   int           `json:"changed_lines"`
+	Diff           string        `json:"diff,omitempty"`
+	Deleted        bool          `json:"deleted,omitempty"`
+	Readback       *ByteReadback `json:"readback,omitempty"`
 }
 
 // BatchResult is the aggregate outcome.

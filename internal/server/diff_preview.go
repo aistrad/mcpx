@@ -69,6 +69,9 @@ func editResponseData(remoteSessionID, editID string, result edit.BatchResult, r
 			"diff_bytes":      len(item.Diff),
 		}
 		budget := cleanDiffFilePreviewMaxBytes
+		if item.Readback != nil {
+			file["readback"] = item.Readback
+		}
 		if remaining < budget {
 			budget = remaining
 		}

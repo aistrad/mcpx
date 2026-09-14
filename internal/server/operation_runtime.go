@@ -103,11 +103,26 @@ func (r *Runtime) waitForOperationTask(ctx context.Context, input operation.Exec
 	}
 	if !task.Wait(ctx) {
 		if ctx.Err() != nil {
+			if err := task.Kill(); err != nil {
+				return nil, fmt.Errorf("%w: stop operation task: %v", operation.ErrEffectsUnconfirmed, err)
+			}
+			// 完成信号包括 Windows Job 后代清空；无法有界核实时报告中断。
+			stopCtx, stopCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			stopped := task.Wait(stopCtx)
+			stopCancel()
+			if !stopped || task.StatusView()["status"] == terminal.TaskFailed {
+				return nil, operation.ErrEffectsUnconfirmed
+			}
 			return nil, ctx.Err()
 		}
 		return nil, fmt.Errorf("task %s did not reach a terminal state", taskID)
 	}
 
+	// done 已就绪也可能表示 Job 核查失败。此事实必须优先于普通
+	// 执行错误以及上层 cancelRequested，不能依赖 select 的返回分支。
+	if task.StatusView()["status"] == terminal.TaskFailed {
+		return nil, operation.ErrEffectsUnconfirmed
+	}
 	data := r.taskResultData(task, 0, 0)
 	data["execution_task_id"] = task.ID
 	data["command"] = task.Command
@@ -136,6 +151,9 @@ func (r *Runtime) waitForOperationTask(ctx context.Context, input operation.Exec
 func resultTaskID(result *mcp.CallToolResult) string {
 	if result == nil {
 		return ""
+	}
+	if taskID := strings.TrimSpace(findStringValue(result.StructuredContent, "execution_task_id")); strings.HasPrefix(taskID, "task_") {
+		return taskID
 	}
 	if result.Meta != nil {
 		if metadata, ok := result.Meta[arc.ResultMetadataKey]; ok {
@@ -198,10 +216,8 @@ func operationResult(result *mcp.CallToolResult, callErr error) operation.Execut
 	if status == "" {
 		status = operationResultStatus(result)
 	}
-	if token := resultConfirmationToken(result); token != "" {
-		output.WaitingConfirmation = status == string(envelope.StatusNeedConfirmation)
-		output.ConfirmationToken = token
-	}
+	output.WaitingConfirmation = status == string(envelope.StatusNeedConfirmation)
+	output.ConfirmationToken = resultConfirmationToken(result)
 	if output.Err == nil && status == "failed" {
 		output.Err = errors.New("public tool execution failed")
 	}
@@ -209,6 +225,11 @@ func operationResult(result *mcp.CallToolResult, callErr error) operation.Execut
 }
 
 func operationResultStatus(result *mcp.CallToolResult) string {
+	if result != nil {
+		if status := findStatusValue(result.StructuredContent); status != "" {
+			return status
+		}
+	}
 	for _, content := range result.Content {
 		textContent, ok := content.(*mcp.TextContent)
 		if !ok {
@@ -255,6 +276,9 @@ func findStatusValue(value any) string {
 func resultConfirmationToken(result *mcp.CallToolResult) string {
 	if result == nil {
 		return ""
+	}
+	if token := findStringValue(result.StructuredContent, "confirmation_token"); token != "" {
+		return token
 	}
 	for _, content := range result.Content {
 		textContent, ok := content.(*mcp.TextContent)

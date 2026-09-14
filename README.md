@@ -499,7 +499,13 @@ read(view="file") → edit → observe(view="changes")
 `edit` 接收 `edits[]`，支持 create、update、rename；用户提出删除、移除或清理时必须使用专用的
 `move_out(action="prepare") → 用户确认 → move_out(action="submit")` 流程，目标会安全移至操作系统回收站而非永久删除，update 优先使用
 精确唯一 `replacements`。同一请求带 `idempotency_key` 时，重试返回原终态，
-参数变化返回 `IDEMPOTENCY_CONFLICT`。默认只返回有界 diff 预览；需要完整内容时
+参数变化返回 `IDEMPOTENCY_CONFLICT`。精确字节写入使用 `content_base64`、`newline_policy: "exact"`
+和必填的 `expected_format: {charset, bom, line_ending}`，支持 create/update；update 仍须提供旧 `base_sha256`。
+Base64 解码后的文本字节原样落盘，不补换行、不转换 BOM 或编码，也不能同时传入 content/replacements/range。
+`expected_format` 约束最终格式，不触发转换；不匹配时拒绝写入。逻辑文本编辑可用 `newline_policy: "preserve"` 声明原格式保持语义。
+实际成功写入返回 `results[].readback`，包含 byte_length、sha256、format 与最后最多 16 字节的 tail_hex；预演不返回落盘 readback。
+幂等重放返回原操作回执，不声称重放时文件仍未被其他操作修改。
+默认只返回有界 diff 预览；需要完整内容时
 使用 `observe(view="diff", edit_id, offset, limit)` 分片读取。
 
 生产限制和破坏性操作契约：完整 `read` 的源文件上限为 4 MiB，超大文件使用
@@ -572,7 +578,13 @@ absolute path、`..` 越界和中间 symlink 仍拒绝。`move_out` 在 MCP `too
 }
 ```
 
-`execute` 支持用 `&&`、`||` 和 `;` 组合简单命令。服务端会在启动 shell **之前**解析全部 segment，逐段应用
+需要参数边界保真时，使用 `execute(action="run", argv=["git", "commit", "-m", "修复中文 参数"], shell=false, ...)`。
+`argv[0]` 是可执行文件，其余元素原样传给进程，不经过 shell 或二次拆词；空参数、中文、引号和反斜杠均保留。
+该模式与 `command`、`task`、`runtime+script` 互斥，必须显式传入 `shell=false`。
+现有命令策略、用途、Workspace 范围、用户确认与幂等键仍生效；确认绑定完整 argv，重试须保留相同参数和 `idempotency_key`。
+策略与审计中的命令文本仅用于展示和检查，实际执行始终使用原始数组。此能力不自动处理 GitHub 未知写入结果或 Git 传输恢复。
+
+`execute` 的 `command` 模式支持用 `&&`、`||` 和 `;` 组合简单命令。服务端会在启动 shell **之前**解析全部 segment，逐段应用
 `deny` / `confirm` / `allow` 策略并记录结构化 `command_policy`；任一 segment 为 `deny` 时整条命令拒绝，
 任一 segment 为 `confirm` 时对整条冻结命令进行一次用户确认。只有全部 segment 通过，并且启用的
 preflight audit 成功写入后，原始 command 才会一次性交给 shell。管道、重定向、单个 `&`、换行、`$()`
@@ -886,3 +898,20 @@ git diff --check
 - `/sse` 或 `/mcp/sse` 返回 `404`：这是预期行为；请把客户端改为 Streamable HTTP `/mcp`。
 - 客户端看不到新工具：刷新 MCP Server，必要时新建客户端会话以重新获取工具表。
 - 截图失败：检查桌面会话、录屏权限和 Linux 截图后端。
+# Issue #823 操作状态补充
+
+带 `run_id` 的 Session Git 身份读取会在数据库中首次冻结 canonical path、remote 摘要、ref、HEAD/tree 与 Remote Session 关联。之后重新打开 Session 只接受相同身份，execute 的 expected_workspace 也必须匹配已冻结记录，不能通过传入刚观察到的新值绕过。
+
+需要推进候选时，先制作并审核不改变分支的 commit 对象，再以 `argv=["git","update-ref",完整冻结ref,新CommitSHA,旧HEAD]` 和 `workspace_transition={"operation_id":稳定ID,"head":新CommitSHA,"tree":精确treeSHA}` 执行。新 commit 必须仅以旧 HEAD 为父提交；Runtime 核对对象及命令，保留 before/after 与 Task 关联，只有持久 Task exit=0 且后置 GitIdentity 完整吻合才原子推进一次。返回 confirmed 的 workspace_post_identity 可用于下一步 push；若 Task 尚在运行，完成后再次打开同一 run/Session 或提交后续明确身份时进行回读恢复。
+
+没有执行回执、回读不同、执行失败或未知结果时不推进、不重新执行原 mutation。普通 git commit 后仅观察新 HEAD 不能成为证明；本合同用预制 commit 对象与带旧值条件的 update-ref 完成分支提交，避免在写入后猜测来源。该候选尚未通过独立 Runtime Review 或真实 Chat 验收。
+
+`operation_batch` 可由调用方提供稳定 `run_id` 与 `operation_id`，发送前应记录这两个值。请求丢失后恢复同一 ID 与完整计划，会返回原操作状态，不再次安排执行；只允许传输 request_id 改变，同 ID 的运行标识、Session、目的或步骤参数改变会拒绝。省略时服务端生成标识，但首次响应完全丢失时调用方无法依靠尚未取得的标识恢复，因此有副作用的可恢复调用应在发送前指定它们。
+
+结果保留期结束后，提交摘要仍随 Remote Session 保留。同 ID 请求返回 operation_result_expired，不能以新执行重建已过期结果。该标识只保证 Runtime 提交不重复；远端 GitHub 已发送效果仍须按其独立恢复账本回读，不能从本地 interrupted 推断远端未生效。
+
+异步 operation 状态回读提供 `state_sequence`、`state_event_id`；终态额外提供 `terminal_event_id`。同一 operation 的状态或步骤进度变化会推进序号，重复读取不改变序号。持久终态不能再改为另一终态或运行态；进程恢复将未结束操作原子地标记为 interrupted，其状态标识可在后续恢复中继续回读。旧记录迁移后的序号从当前快照 1 开始，不伪造历史事件。
+
+调用方应按 operation_id 和 state_sequence 处理可变状态更新，按 terminal_event_id 去重完成；时间较早或重复的状态不能覆盖较新的状态。取消请求返回不一定已经是终态，必须等待执行步骤实际退出；确认终态后无需继续等待。状态、步骤及序号通过同一读取事务返回，正常完成的聚合结果与终态一起写入。
+
+本候选新增数据库列和触发器。部署前需将数据库升级与可恢复性一并纳入候选 Review 和回滚方案；仅恢复旧 exe 不等于恢复旧数据库行为。该实现不判断 OpenAI Tunnel 的 not_seen/not_connected，也不保证进程中断时通知已送达；缺通知时须使用获准的有界状态回读。

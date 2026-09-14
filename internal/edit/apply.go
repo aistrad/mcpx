@@ -2,6 +2,7 @@ package edit
 
 import (
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"fmt"
 	"os"
@@ -72,10 +73,30 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 				Path: path, Index: fileIndex, Err: ErrInvalidInput,
 			}
 		}
+		if req.ValidatePath != nil {
+			if err := req.ValidatePath(abs); err != nil {
+				return BatchResult{}, err
+			}
+		}
 		seenPaths[abs] = fileIndex
 
 		p := prepared{edit: item, absPath: abs}
 		p.edit.Operation = op
+		var exactBytes []byte
+		if item.ContentBase64 != nil {
+			if op == OpUpdate && strings.TrimSpace(item.BaseSHA256) == "" {
+				return BatchResult{}, &ApplyError{Code: "INVALID_INPUT", Message: "exact byte update requires base_sha256", Path: path, Index: fileIndex, Err: ErrInvalidInput}
+			}
+			if item.NewlinePolicy != "exact" || item.ExpectedFormat == nil || (op != OpCreate && op != OpUpdate) || item.Content != "" || len(item.Replacements) > 0 || item.Range != nil {
+				return BatchResult{}, &ApplyError{Code: "INVALID_INPUT", Message: "content_base64 requires newline_policy=exact, expected_format and create/update without logical content, replacements or range", Path: path, Index: fileIndex, Err: ErrInvalidInput}
+			}
+			exactBytes, err = base64.StdEncoding.Strict().DecodeString(*item.ContentBase64)
+			if err != nil {
+				return BatchResult{}, &ApplyError{Code: "INVALID_INPUT", Message: "invalid content_base64", Path: path, Index: fileIndex, Err: ErrInvalidInput}
+			}
+		} else if item.NewlinePolicy != "" && item.NewlinePolicy != "preserve" {
+			return BatchResult{}, &ApplyError{Code: "INVALID_INPUT", Message: "newline_policy=exact requires content_base64", Path: path, Index: fileIndex, Err: ErrInvalidInput}
+		}
 
 		switch op {
 		case OpCreate:
@@ -95,6 +116,14 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			p.mode = 0o644
 			p.diff, p.changed = UnifiedDiff(path, "", logical)
 			p.proposed = encodeWithFormat(logical, format)
+			if item.ContentBase64 != nil {
+				p.proposed = exactBytes
+				logical, _, err = normalizeToLogical(exactBytes)
+				if err != nil {
+					return BatchResult{}, err
+				}
+				p.diff, p.changed = UnifiedDiff(path, "", logical)
+			}
 			p.newHash = hashBytes(p.proposed)
 
 		case OpUpdate:
@@ -117,6 +146,14 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			}
 			p.diff, p.changed = UnifiedDiff(path, logical, proposedLogical)
 			p.proposed = encodeWithOriginalFormat(proposedLogical, format, original)
+			if item.ContentBase64 != nil {
+				p.proposed = exactBytes
+				proposedLogical, _, err = normalizeToLogical(exactBytes)
+				if err != nil {
+					return BatchResult{}, err
+				}
+				p.diff, p.changed = UnifiedDiff(path, logical, proposedLogical)
+			}
 			p.newHash = hashBytes(p.proposed)
 
 		case OpDelete:
@@ -162,6 +199,11 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 				}
 			}
 			seenPaths[absNew] = fileIndex
+			if req.ValidatePath != nil {
+				if err := req.ValidatePath(absNew); err != nil {
+					return BatchResult{}, err
+				}
+			}
 			if _, err := os.Stat(absNew); err == nil {
 				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "rename target already exists", Path: newPath, Index: fileIndex, Err: ErrTargetExists}
 			}
@@ -184,6 +226,12 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			return BatchResult{}, &ApplyError{Code: "UNSUPPORTED", Message: "unsupported operation " + op, Path: path, Index: fileIndex, Err: ErrUnsupportedOp}
 		}
 
+		if expected := item.ExpectedFormat; expected != nil {
+			actual := file.DetectFormat(p.proposed)
+			if op == OpDelete || expected.Charset == "" || expected.BOM == "" || expected.LineEnding == "" || actual.Charset != expected.Charset || actual.BOM != expected.BOM || actual.LineEnding != expected.LineEnding {
+				return BatchResult{}, &ApplyError{Code: "FORMAT_MISMATCH", Message: "proposed bytes do not match expected_format", Path: path, Index: fileIndex, Err: ErrInvalidInput}
+			}
+		}
 		totalChanged += p.changed
 		if totalChanged > MaxChangedLines {
 			return BatchResult{}, &ApplyError{
@@ -243,6 +291,46 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 			return BatchResult{}, err
 		}
 	}
+	// 持久化 hook 可能阻塞或允许外部写入；在任何本批次副作用前重新核对整批。
+	for index, p := range preparedList {
+		currentPath, err := file.Resolve(req.WorkspaceRoot, p.edit.Path)
+		if err != nil || currentPath != p.absPath {
+			return BatchResult{}, &ApplyError{Code: "STALE_REVISION", Message: "file physical path changed before write", Path: p.edit.Path, Index: index, Err: ErrStale}
+		}
+		if p.edit.Operation == OpCreate {
+			// 最终物理路径策略不依赖调用者传入的字面路径。
+			if _, err := os.Lstat(currentPath); !os.IsNotExist(err) {
+				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "create target appeared before write", Path: p.edit.Path, Index: index, Err: ErrTargetExists}
+			}
+		} else {
+			current, err := os.ReadFile(currentPath)
+			if err != nil {
+				return BatchResult{}, &ApplyError{Code: "STALE_REVISION", Message: "file unavailable before write", Path: p.edit.Path, Index: index, Err: ErrStale}
+			}
+			if err := checkBase(current, hashBytes(p.original), p.edit.Path, index); err != nil {
+				return BatchResult{}, err
+			}
+		}
+		if req.ValidatePath != nil {
+			if err := req.ValidatePath(currentPath); err != nil {
+				return BatchResult{}, err
+			}
+		}
+		if p.edit.Operation == OpRename {
+			currentNew, err := file.Resolve(req.WorkspaceRoot, p.edit.NewPath)
+			if err != nil || currentNew != p.absNew {
+				return BatchResult{}, &ApplyError{Code: "STALE_REVISION", Message: "rename target physical path changed before write", Path: p.edit.NewPath, Index: index, Err: ErrStale}
+			}
+			if _, err := os.Lstat(currentNew); !os.IsNotExist(err) {
+				return BatchResult{}, &ApplyError{Code: "TARGET_EXISTS", Message: "rename target appeared before write", Path: p.edit.NewPath, Index: index, Err: ErrTargetExists}
+			}
+			if req.ValidatePath != nil {
+				if err := req.ValidatePath(currentNew); err != nil {
+					return BatchResult{}, err
+				}
+			}
+		}
+	}
 
 	// Apply writes only after all validation, line counting, and durable
 	// pre-write hooks have completed.
@@ -280,6 +368,29 @@ func ApplyBatchWithHook(req BatchRequest, beforeWrite func(BatchResult) error) (
 		}
 	}
 
+	// 成功回执来自实际落盘字节；预演和写前持久化记录不伪造 readback。
+	for index, p := range preparedList {
+		if p.deleted {
+			continue
+		}
+		path := p.absPath
+		if p.edit.Operation == OpRename {
+			path = p.absNew
+		}
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return BatchResult{}, err
+		}
+		sha := hashBytes(content)
+		if sha != p.newHash {
+			return BatchResult{}, &ApplyError{Code: "READBACK_MISMATCH", Message: "written bytes differ from prepared result", Path: p.edit.Path, Index: index, Current: sha, Err: ErrStale}
+		}
+		tail := content
+		if len(tail) > 16 {
+			tail = tail[len(tail)-16:]
+		}
+		batchResult.Results[index].Readback = &ByteReadback{ByteLength: len(content), SHA256: sha, Format: file.DetectFormat(content), TailHex: hex.EncodeToString(tail)}
+	}
 	return batchResult, nil
 }
 

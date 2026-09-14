@@ -19,7 +19,7 @@ func Resolve(workspaceRoot, rel string) (abs string, err error) {
 		return "", err
 	}
 	rootLexical = filepath.Clean(rootLexical)
-	root, err := filepath.EvalSymlinks(rootLexical)
+	root, err := physicalPath(rootLexical)
 	if err != nil {
 		return "", fmt.Errorf("resolve workspace root: %w", err)
 	}
@@ -27,19 +27,23 @@ func Resolve(workspaceRoot, rel string) (abs string, err error) {
 	if !withinRoot(rootLexical, joined) {
 		return "", fmt.Errorf("path escapes workspace: %s", rel)
 	}
-	resolved, err := filepath.EvalSymlinks(joined)
+	resolved, err := physicalPath(joined)
 	if err != nil {
 		if os.IsNotExist(err) {
 			// Resolve the nearest existing ancestor. This preserves support for
 			// future files while still detecting a symlinked parent escape.
 			ancestor := filepath.Dir(joined)
 			for {
-				realParent, parentErr := filepath.EvalSymlinks(ancestor)
+				realParent, parentErr := physicalPath(ancestor)
 				if parentErr == nil {
 					if !withinRoot(root, realParent) {
 						return "", fmt.Errorf("path escapes workspace: %s", rel)
 					}
-					return joined, nil
+					suffix, suffixErr := filepath.Rel(ancestor, joined)
+					if suffixErr != nil {
+						return "", suffixErr
+					}
+					return filepath.Join(realParent, suffix), nil
 				}
 				parent := filepath.Dir(ancestor)
 				if parent == ancestor {

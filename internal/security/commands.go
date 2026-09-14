@@ -370,10 +370,51 @@ func isReadonlyGit(args []string) bool {
 		return false
 	}
 	switch args[0] {
-	case "status", "diff", "log", "show":
-		return allReadonlyArguments(args[1:])
+	case "status":
+		return readonlyGitArguments(args[1:])
+	case "diff", "log", "show":
+		// 这些读取可默认启动仓库配置的外部转换器。只有调用者明确
+		// 禁用两个入口才自动放行；保留原 argv 与确认摘要，不静默改写。
+		noExternal, noTextconv := false, false
+		for _, arg := range args[1:] {
+			if arg == "--" {
+				break
+			}
+			noExternal = noExternal || arg == "--no-ext-diff"
+			noTextconv = noTextconv || arg == "--no-textconv"
+		}
+		return noExternal && noTextconv && readonlyGitArguments(args[1:])
 	}
 	return false
+}
+
+// Git 支持长选项缩写及外部 diff/textconv。未知选项必须交回显式策略，
+// 不能仅凭安全字符将带文件输出或程序执行的参数自动当作只读。
+func readonlyGitArguments(args []string) bool {
+	paths := false
+	for _, arg := range args {
+		if !safeReadonlyArgument(arg) {
+			return false
+		}
+		if arg == "--" {
+			paths = true
+			continue
+		}
+		if paths || !strings.HasPrefix(arg, "-") {
+			continue
+		}
+		switch arg {
+		case "--short", "-s", "--branch", "-b", "--porcelain", "--porcelain=v1", "--porcelain=v2",
+			"--oneline", "--stat", "--shortstat", "--numstat", "--name-only", "--name-status",
+			"--summary", "--check", "--cached", "--staged", "--no-ext-diff", "--no-textconv",
+			"--no-color", "--color=never", "--patch", "-p", "--no-patch", "--raw", "--abbrev-commit",
+			"--graph", "--decorate", "--no-decorate", "--all", "--reverse", "--date-order", "--topo-order":
+			continue
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func allReadonlyArguments(args []string) bool {

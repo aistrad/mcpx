@@ -5,13 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"mcpx/internal/audit"
 	"mcpx/internal/edit"
 	"mcpx/internal/envelope"
+	"mcpx/internal/file"
 	"mcpx/internal/idempotency"
 	"mcpx/internal/observation"
 	"mcpx/internal/remotesession"
@@ -62,6 +65,22 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		}
 	}
 	effective := r.effectiveConfig(session.WorkspacePath)
+	physicalRoot, err := file.Resolve(session.WorkspacePath, ".")
+	if err != nil {
+		return r.editToolError(envReq, session, err)
+	}
+	validatePath := func(absolute string) error {
+		relative, err := filepath.Rel(physicalRoot, absolute)
+		if err != nil {
+			return err
+		}
+		for _, path := range []string{filepath.ToSlash(relative), filepath.ToSlash(absolute)} {
+			if security.MatchFile(effective.Security.Files, path) == security.Deny {
+				return &edit.ApplyError{Code: "FILE_DENIED", Message: "file denied by policy", Path: relative, Index: -1}
+			}
+		}
+		return nil
+	}
 	for _, item := range edits {
 		for _, path := range []string{item.Path, item.NewPath} {
 			if path != "" && security.MatchFile(effective.Security.Files, path) == security.Deny {
@@ -81,7 +100,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		apply = value
 	}
 	if !apply {
-		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: session.WorkspacePath, Edits: edits, DryRun: true})
+		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: session.WorkspacePath, Edits: edits, DryRun: true, ValidatePath: validatePath})
 		if dryRunErr != nil {
 			return r.editToolError(envReq, session, dryRunErr)
 		}
@@ -134,6 +153,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	result, err := edit.ApplyBatchWithHook(edit.BatchRequest{
 		WorkspaceRoot: session.WorkspacePath,
 		Edits:         edits,
+		ValidatePath:  validatePath,
 	}, func(prepared edit.BatchResult) error {
 		preparedResult = prepared
 		stored := storedEditResult{EditID: editID, Result: prepared}
@@ -179,6 +199,9 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		encoded, _ := json.Marshal(stored)
 		metadata, _ := json.Marshal(map[string]any{"edit_id": editID, "paths": editPaths(result)})
 		if err := r.idempotency.Complete(ctx, idemKey, fingerprint, idempotency.StateSucceeded, encoded, metadata); err != nil {
+			recoveryCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+			_ = r.idempotency.MarkInDoubt(recoveryCtx, idemKey, fingerprint, nil)
+			cancel()
 			return r.editIdempotencyInDoubt(envReq, session, idempotency.Record{Key: idemKey, Fingerprint: fingerprint, State: idempotency.StateInDoubt})
 		}
 	}
@@ -372,6 +395,20 @@ func parseCleanEdits(payload map[string]any) ([]edit.FileEdit, error) {
 		return nil, err
 	}
 	var edits []edit.FileEdit
+	var rawEdits []map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &rawEdits); err != nil {
+		return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "invalid edits payload", Index: -1, Err: edit.ErrInvalidInput}
+	}
+	for index, item := range rawEdits {
+		if _, exact := item["content_base64"]; !exact {
+			continue
+		}
+		for _, key := range []string{"content", "replacements", "range"} {
+			if _, present := item[key]; present {
+				return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "content_base64 cannot be combined with logical edit fields", Index: index, Err: edit.ErrInvalidInput}
+			}
+		}
+	}
 	if err := json.Unmarshal(encoded, &edits); err != nil {
 		return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: "invalid edits payload", Index: -1, Err: edit.ErrInvalidInput}
 	}
@@ -381,6 +418,9 @@ func parseCleanEdits(payload map[string]any) ([]edit.FileEdit, error) {
 	for i := range edits {
 		if strings.TrimSpace(edits[i].Operation) == "" {
 			return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: fmt.Sprintf("edits[%d].operation required", i), Index: i, Err: edit.ErrInvalidInput}
+		}
+		if (strings.TrimSpace(edits[i].Operation) == edit.OpUpdate || strings.TrimSpace(edits[i].Operation) == edit.OpRename) && strings.TrimSpace(edits[i].BaseSHA256) == "" {
+			return nil, &edit.ApplyError{Code: "INVALID_INPUT", Message: fmt.Sprintf("edits[%d].base_sha256 required for update/rename", i), Path: edits[i].Path, Index: i, Err: edit.ErrInvalidInput}
 		}
 	}
 	return edits, nil

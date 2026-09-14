@@ -215,8 +215,49 @@ func (r *Runtime) reconcilePendingEdit(ctx context.Context, envReq envelope.Requ
 		return nil, false
 	}
 	if expected {
-		_ = r.saveCleanEditRecord(ctx, session.ID, principalID, stored.EditID, "succeeded", stored.Result)
-		_ = r.idempotency.Complete(ctx, key, fingerprint, idempotency.StateSucceeded, claim.Record.Response, claim.Record.Metadata)
+		recoveryFailure := func() (*mcp.CallToolResult, bool) {
+			_ = r.idempotency.MarkInDoubt(ctx, key, fingerprint, claim.Record.Metadata)
+			result, _ := r.editIdempotencyInDoubt(envReq, session, claim.Record)
+			return result, true
+		}
+		for index := range stored.Result.Results {
+			item := &stored.Result.Results[index]
+			if item.Deleted {
+				continue
+			}
+			path := item.Path
+			if item.Operation == edit.OpRename {
+				path = item.NewPath
+			}
+			absolute, err := file.Resolve(session.WorkspacePath, path)
+			if err != nil {
+				return recoveryFailure()
+			}
+			content, err := os.ReadFile(absolute)
+			if err != nil {
+				return recoveryFailure()
+			}
+			digest := sha256.Sum256(content)
+			sha := "sha256:" + hex.EncodeToString(digest[:])
+			if sha != item.NewSHA256 {
+				return recoveryFailure()
+			}
+			tail := content
+			if len(tail) > 16 {
+				tail = tail[len(tail)-16:]
+			}
+			item.Readback = &edit.ByteReadback{ByteLength: len(content), SHA256: sha, Format: file.DetectFormat(content), TailHex: hex.EncodeToString(tail)}
+		}
+		if err := r.saveCleanEditRecord(ctx, session.ID, principalID, stored.EditID, "succeeded", stored.Result); err != nil {
+			return recoveryFailure()
+		}
+		encoded, err := json.Marshal(stored)
+		if err != nil {
+			return recoveryFailure()
+		}
+		if err := r.idempotency.Complete(ctx, key, fingerprint, idempotency.StateSucceeded, encoded, claim.Record.Metadata); err != nil {
+			return recoveryFailure()
+		}
 		result, _ := r.editToolSuccess(envReq, session, stored.EditID, stored.Result, true)
 		return result, true
 	}

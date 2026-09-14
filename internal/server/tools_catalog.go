@@ -318,6 +318,7 @@ func (r *Runtime) registerConsolidatedToolsCatalog(s *mcp.Server) {
 	}, "带依赖关系的公开工具操作")
 	operationSteps["maxItems"] = operation.MaxSteps
 	r.addTool(s, supportTool("operation_batch", toolDesc["operation_batch"], map[string]any{
+		"run_id": stringSchema("调用方稳定运行 ID"), "operation_id": stringSchema("调用方稳定操作 ID；同 ID 同计划回读原操作，不重复执行"),
 		"remote_session_id": remoteSession, "operations": operationSteps, "purpose": stringSchema("本次调用的目的；必须由用户明确提供"),
 	}, []string{"remote_session_id", "purpose", "operations"}, mutatingToolAnnotation), r.toolOperationBatch)
 	operationIDsSchema := arraySchema(map[string]any{"type": "string"}, "批量查询的异步操作 ID；最多 32 个，不要把 operation_manage 嵌套进 operation_batch")
@@ -332,22 +333,39 @@ func (r *Runtime) registerConsolidatedToolsCatalog(s *mcp.Server) {
 	}, []string{"remote_session_id", "action"}, sessionToolAnnotation)
 	var operationManageSchema map[string]any
 	_ = json.Unmarshal(mcpresult.ToolSchemaJSON(operationManage), &operationManageSchema)
+	// 客户端可能直接把 oneOf 投影为参数联合类型，不合并外层 properties。
+	// 每个分支都必须独立描述实际调用所需的完整身份和参数。
+	operationBranchProperties := func(batch bool) map[string]any {
+		properties := make(map[string]any)
+		for key, value := range operationManageSchema["properties"].(map[string]any) {
+			properties[key] = value
+		}
+		if batch {
+			delete(properties, "operation_id")
+			delete(properties, "step_id")
+			delete(properties, "cursor")
+			delete(properties, "confirmation_token")
+			delete(properties, "timeout_ms")
+			properties["action"] = enumSchema("批量查询动作", "status", "result")
+		} else {
+			delete(properties, "operation_ids")
+		}
+		return properties
+	}
 	operationManageSchema["oneOf"] = []any{
 		map[string]any{
-			"type":        "object",
-			"description": "单操作模式；支持 status、wait、result、cancel、resume。",
-			"properties": map[string]any{
-				"action": enumSchema("单操作动作", "status", "wait", "result", "cancel", "resume"),
-			},
-			"required": []string{"operation_id"},
+			"type":                 "object",
+			"description":          "单操作模式；支持 status、wait、result、cancel、resume。",
+			"properties":           operationBranchProperties(false),
+			"required":             []string{"remote_session_id", "action", "operation_id"},
+			"additionalProperties": false,
 		},
 		map[string]any{
-			"type":        "object",
-			"description": "批量查询模式；仅支持 status、result，直接传 operation_ids。",
-			"properties": map[string]any{
-				"action": enumSchema("批量查询动作", "status", "result"),
-			},
-			"required": []string{"operation_ids"},
+			"type":                 "object",
+			"description":          "批量查询模式；仅支持 status、result，直接传 operation_ids。",
+			"properties":           operationBranchProperties(true),
+			"required":             []string{"remote_session_id", "action", "operation_ids"},
+			"additionalProperties": false,
 		},
 	}
 	operationManageSchema["required"] = []string{"remote_session_id", "action"}
@@ -375,8 +393,22 @@ func (r *Runtime) registerConsolidatedToolsCatalog(s *mcp.Server) {
 		"execution_mode": enumSchema("async 表示外层 Operation 异步调度；python/node runtime 使用 Task 生命周期，sqlite readonly query 直接返回结构化结果", "sync", "async"),
 	}
 	executeBranches := map[string]actionSchemaBranch{
-		"run": {Description: "执行 command、项目 task，或一次性 runtime+script。三种模式互斥；python/node 源码经 stdin+EOF 直接执行且不经过 shell，sqlite 对 Workspace 内现有数据库执行只读单查询并返回结构化行。", Properties: map[string]any{
+		"run": {Description: "执行 argv+shell=false、command、项目 task，或一次性 runtime+script，四种模式互斥。argv 按元素直接传递；python/node 源码经 stdin+EOF 直接执行且不经过 shell，sqlite 对 Workspace 内现有数据库执行只读单查询并返回结构化行。", Properties: map[string]any{
 			"command": stringSchema("Workspace 内待执行的简单命令"), "task": stringSchema("项目任务名称，与 command/runtime+script 互斥"),
+			"argv":  arraySchema(stringSchema("单个原样传递的参数；第一个元素为可执行文件"), "直接执行的参数数组，与 command/task/runtime+script 互斥"),
+			"shell": booleanSchema("argv 模式必须显式为 false；不通过 shell 或二次拆分"),
+			"workspace_transition": map[string]any{"type": "object", "additionalProperties": false,
+				"properties": map[string]any{"operation_id": stringSchema("稳定身份推进操作 ID"), "head": stringSchema("预先明确的新 Commit SHA"), "tree": stringSchema("该 Commit 的精确 tree SHA")},
+				"required":   []string{"operation_id", "head", "tree"}, "description": "仅用于 git update-ref frozen-ref new-head old-head；执行成功且后置回读吻合才推进冻结身份"},
+			"expected_workspace": map[string]any{
+				"type": "object", "additionalProperties": false,
+				"description": "冻结本次 Git 操作的物理目标与前置身份；路径须在注册 Workspace 内，启动进程前再次核对，实际 cwd 使用此路径",
+				"properties": map[string]any{
+					"canonical_path": stringSchema("精确物理 Git root"), "remote_name": stringSchema("目标 remote 名称"),
+					"remote_sha256": stringSchema("fetch/push remote 精确配置摘要，不传凭据"), "ref": stringSchema("完整 ref 或 DETACHED"),
+					"head": stringSchema("预期前置 HEAD"), "tree": stringSchema("预期前置 HEAD tree"), "run_id": stringSchema("稳定运行 ID"),
+				}, "required": []string{"canonical_path", "remote_name", "remote_sha256", "ref", "head", "tree", "run_id"},
+			},
 			"runtime":  enumSchema("一次性临时运行时；sqlite 仅支持只读查询", "python", "node", "sqlite"),
 			"script":   stringSchema("Python/Node 源码或 SQLite 单条只读查询；最大 65536 bytes。服务端只持久化 SHA/字节数，不把源码写入 Task/audit/observation"),
 			"database": stringSchema("仅 sqlite runtime 使用；Workspace 内现有 SQLite 数据库的相对路径"),

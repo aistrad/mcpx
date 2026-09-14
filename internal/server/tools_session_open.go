@@ -10,12 +10,14 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"mcpx/internal/audit"
+	workspacefile "mcpx/internal/file"
 	"mcpx/internal/instruction"
 	"mcpx/internal/observation"
 	"mcpx/internal/projecttask"
 	"mcpx/internal/remotesession"
 	"mcpx/internal/skill"
 	buildversion "mcpx/internal/version"
+	workspaceidentity "mcpx/internal/workspace"
 )
 
 // toolSessionOpen creates or reuses a Remote Session and returns a full bootstrap bundle
@@ -61,6 +63,32 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 	}
 
 	wsPath := session.WorkspacePath
+	var gitIdentity *workspaceidentity.GitIdentity
+	if runID := stringPayload(envReq.Payload, "run_id"); runID != "" || stringPayload(envReq.Payload, "git_identity_path") != "" {
+		if err := r.reconcileWorkspaceTransition(ctx, session.ID, runID); err != nil {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_TRANSITION_UNVERIFIED", err.Error())
+		}
+		identityPath := stringPayload(envReq.Payload, "git_identity_path")
+		if identityPath == "" {
+			identityPath = "."
+		}
+		resolved, err := workspacefile.Resolve(wsPath, identityPath)
+		if err != nil {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_IDENTITY_UNAVAILABLE", "identity target must be inside registered workspace")
+		}
+		remoteName := stringPayload(envReq.Payload, "remote_name")
+		if remoteName == "" {
+			remoteName = "origin"
+		}
+		identity, err := workspaceidentity.CaptureGitIdentity(ctx, resolved, remoteName, runID)
+		if err != nil {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_IDENTITY_UNAVAILABLE", err.Error())
+		}
+		if err := workspaceidentity.FreezeGitIdentity(ctx, r.state.DB(), session.ID, identity); err != nil {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_IDENTITY_MISMATCH", err.Error())
+		}
+		gitIdentity = &identity
+	}
 	effective := r.effectiveConfig(wsPath)
 	tools := r.runtimeToolCapabilities(effective, &session)
 
@@ -200,6 +228,9 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 	}
 	if latestModelState != nil {
 		data["latest_model_state"] = latestModelState
+	}
+	if gitIdentity != nil {
+		data["git_identity"] = gitIdentity
 	}
 
 	r.logAudit(audit.Event{

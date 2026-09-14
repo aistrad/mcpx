@@ -27,6 +27,14 @@ func (r *Runtime) toolOperationBatch(ctx context.Context, req *mcp.CallToolReque
 	if session.Role != "owner" && session.Role != "editor" {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "forbidden", "operation_batch requires an owner or editor session")
 	}
+	for _, key := range []string{"run_id", "operation_id"} {
+		if raw, present := envReq.Payload[key]; present {
+			value, ok := raw.(string)
+			if !ok || value == "" || strings.TrimSpace(value) != value || len(value) > 200 {
+				return r.terminalError(envReq, session.ID, session.WorkspaceName, "bad_request", key+" must be a non-empty stable string of at most 200 bytes")
+			}
+		}
+	}
 	items, ok := envReq.Payload["operations"].([]any)
 	if !ok || len(items) == 0 {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "bad_request", "operations is required")
@@ -77,10 +85,14 @@ func (r *Runtime) toolOperationBatch(ctx context.Context, req *mcp.CallToolReque
 		})
 	}
 	record, err := r.operations.Submit(ctx, operation.SubmitSpec{
+		ID: stringPayload(envReq.Payload, "operation_id"), RunID: stringPayload(envReq.Payload, "run_id"),
 		RemoteSessionID: session.ID, WorkspaceName: session.WorkspaceName,
 		RequestID: envReq.RequestID, Purpose: envReq.Intent, Steps: steps,
 	}, r.executeOperationStep)
 	if err != nil {
+		if errors.Is(err, operation.ErrResultExpired) {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "operation_result_expired", err.Error())
+		}
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "operation_submit_error", err.Error())
 	}
 	response := envelope.Accepted(envReq.RequestID, session.WorkspaceName, operationView(record, false))
@@ -104,6 +116,9 @@ func (r *Runtime) toolOperationManage(ctx context.Context, req *mcp.CallToolRequ
 	action := strings.ToLower(stringPayload(envReq.Payload, "action"))
 	if action == "" {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "bad_request", "action is required")
+	}
+	if (action == "cancel" || action == "resume") && session.Role != "owner" && session.Role != "editor" {
+		return r.terminalError(envReq, session.ID, session.WorkspaceName, "forbidden", "operation mutation requires an owner or editor session")
 	}
 	if r.operations == nil {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "operation_unavailable", "asynchronous operations are unavailable")
@@ -379,7 +394,12 @@ func (r *Runtime) operationError(envReq envelope.Request, session remotesession.
 func operationView(record operation.Record, includeResults bool) map[string]any {
 	data := map[string]any{
 		"operation_id": record.ID, "remote_session_id": record.RemoteSessionID, "workspace": record.WorkspaceName,
-		"state": record.State, "purpose": record.Purpose,
+		"run_id": record.RunID,
+		"state":  record.State, "purpose": record.Purpose,
+		"state_sequence": record.StateSequence, "state_event_id": record.StateEventID,
+	}
+	if record.State == operation.StateSucceeded || record.State == operation.StateFailed || record.State == operation.StateInterrupted || record.State == operation.StateCancelled {
+		data["terminal_event_id"] = record.StateEventID
 	}
 	steps := make([]map[string]any, 0, len(record.Steps))
 	for _, step := range record.Steps {

@@ -3,8 +3,12 @@ package operation
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 )
+
+// 无法证明外部效果已停止时使用中断状态，不能代签取消完成。
+var ErrEffectsUnconfirmed = errors.New("external effects are not confirmed stopped")
 
 // State is the durable lifecycle state of an asynchronous operation or step.
 type State string
@@ -35,6 +39,7 @@ type StepSpec struct {
 
 // SubmitSpec describes an operation and all of its steps.
 type SubmitSpec struct {
+	RunID           string
 	ID              string
 	RemoteSessionID string
 	WorkspaceName   string
@@ -45,6 +50,9 @@ type SubmitSpec struct {
 
 // Record is the public operation state assembled from durable records.
 type Record struct {
+	RunID           string
+	StateSequence   int64
+	StateEventID    string
 	ID              string
 	RemoteSessionID string
 	WorkspaceName   string
@@ -109,6 +117,9 @@ type Executor func(context.Context, ExecuteInput) ExecuteResult
 
 // Event is emitted after an operation lifecycle transition.
 type Event struct {
+	RunID           string
+	StateSequence   int64
+	StateEventID    string
 	OperationID     string
 	StepID          string
 	RemoteSessionID string
