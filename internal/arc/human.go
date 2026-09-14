@@ -32,7 +32,10 @@ func RenderToolContent(tool, resultType, renderer, summary string, data any) (st
 		return renderWorkspaceList(summary, asMap)
 	case "session_open":
 		return renderSessionOpen(summary, asMap)
-	case "context_query", "source_read":
+	case "read", "context_query", "source_read":
+		if text, ok := renderReadResult(summary, asMap); ok {
+			return text, true
+		}
 		return renderContextQuery(summary, asMap)
 	case "plan_manage", "plan_create", "plan_read", "plan_transition":
 		if text, ok := renderPlanData(summary, asMap); ok {
@@ -42,7 +45,7 @@ func RenderToolContent(tool, resultType, renderer, summary string, data any) (st
 		if text, ok := renderArtifactRead(summary, asMap); ok {
 			return text, true
 		}
-	case "command_run", "command_execute":
+	case "execute", "command_run", "command_execute":
 		if text, ok := renderCommandConfirmation(summary, asMap); ok {
 			return text, true
 		}
@@ -217,18 +220,21 @@ func renderCommandResult(summary string, data map[string]any) (string, bool) {
 	builder.WriteString("\n\nCommand:\n")
 	builder.WriteString(markdownCodeBlock("sh", command))
 
+	streamTruncated := false
 	for _, stream := range []string{"stdout", "stderr"} {
 		value := strings.TrimRight(humanField(data, stream), "\r\n")
 		if value == "" {
 			continue
 		}
+		snippet, truncated := humanSnippetWithLimit(value, maxHumanSnippetLines, maxHumanSnippetRunes)
+		streamTruncated = streamTruncated || truncated
 		builder.WriteString("\n\n")
 		builder.WriteString(stream)
 		builder.WriteString(":\n")
-		builder.WriteString(markdownCodeBlock("text", value))
+		builder.WriteString(markdownCodeBlock("text", snippet))
 	}
-	if truncated, _ := data["output_truncated"].(bool); truncated {
-		builder.WriteString("\n\nOutput truncated; use the returned execution task/log offsets to continue reading.")
+	if truncated, _ := data["output_truncated"].(bool); truncated || streamTruncated {
+		builder.WriteString("\n\nOutput truncated; use structuredContent or observe logs for the remainder.")
 	}
 	return strings.TrimSpace(builder.String()), true
 }
@@ -401,6 +407,39 @@ func renderSessionSummary(summary string, data map[string]any) (string, bool) {
 			fmt.Fprintf(&builder, "\n- %s: %s", field.label, inlineCode(value))
 		}
 	}
+	return strings.TrimSpace(builder.String()), true
+}
+
+func renderReadResult(summary string, data map[string]any) (string, bool) {
+	items := humanMaps(data["items"])
+	if len(items) == 0 {
+		if humanField(data, "path") == "" {
+			return summary, false
+		}
+		items = []map[string]any{data}
+	}
+	var builder strings.Builder
+	writeHumanSummary(&builder, summary)
+	if builder.Len() == 0 {
+		builder.WriteString("Read result")
+	}
+	for index, item := range items {
+		if index >= maxHumanItems {
+			break
+		}
+		path := humanField(item, "path")
+		if path == "" {
+			path = "file"
+		}
+		fmt.Fprintf(&builder, "\n- %s", inlineCode(path))
+		if sha := humanField(item, "sha256"); sha != "" {
+			fmt.Fprintf(&builder, " sha256=%s", inlineCode(sha))
+		}
+		if truncated, _ := item["truncated"].(bool); truncated {
+			builder.WriteString(" truncated")
+		}
+	}
+	appendMoreItems(&builder, len(items), maxHumanItems)
 	return strings.TrimSpace(builder.String()), true
 }
 

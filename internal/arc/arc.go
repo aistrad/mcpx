@@ -18,9 +18,8 @@ import (
 const Version = "2.0"
 
 // ResultMetadataKey identifies the hidden response metadata that carries the
-// complete ARC envelope. Keeping the envelope in _meta prevents MCP hosts
-// from rendering it as a large JSON result card while preserving a machine-
-// readable copy for clients that explicitly need it.
+// ARC envelope without duplicating business data. Models must read
+// structuredContent; _meta keeps trace identifiers and result type/status.
 const ResultMetadataKey = "mcpx.result"
 
 const (
@@ -132,7 +131,7 @@ type Envelope struct {
 // Contract:
 //   - content[0].text — human-facing summary only (Markdown / short status / diffs)
 //   - structuredContent — model-facing fields {status, type, data, error?, actions?, hints?}
-//   - _meta[mcpx.result] — full ARC envelope for traces
+//   - _meta[mcpx.result] — ARC envelope without business data (trace + type)
 //
 // Models must consume structuredContent (or ARC data), not parse prose text.
 func WrapToolResult(tool string, runtime ResultContext, raw *mcp.CallToolResult) *mcp.CallToolResult {
@@ -369,7 +368,9 @@ func setMetadata(result *mcp.CallToolResult, envelope Envelope, resultType strin
 	result.Meta["mcpx.tool_duration_ms"] = trace.Duration.ServerMs - trace.NetworkLatencyMs
 	result.Meta["mcpx.processing_ms"] = trace.Duration.ServerMs - trace.NetworkLatencyMs
 	result.Meta["mcpx.server_elapsed_ms"] = trace.Duration.ServerMs
-	result.Meta[ResultMetadataKey] = envelope
+	compact := envelope
+	compact.MCPX.Result.Data = nil
+	result.Meta[ResultMetadataKey] = compact
 }
 
 func extractResult(raw *mcp.CallToolResult) (map[string]any, string) {

@@ -46,8 +46,12 @@ func TestWrapToolResultProducesARCSearchEnvelope(t *testing.T) {
 	if result["type"] != "search_result" || result["schema"] != SchemaSearchResult {
 		t.Fatalf("result identity = %+v", result)
 	}
-	if result["data"].(map[string]any)["truncated"] != true {
-		t.Fatalf("result data = %+v", result["data"])
+	structuredData, _ := structured["data"].(map[string]any)
+	if structuredData["truncated"] != true {
+		t.Fatalf("structured data = %+v", structuredData)
+	}
+	if result["data"] != nil {
+		t.Fatalf("metadata must not copy business data: %+v", result["data"])
 	}
 	if result["hints"].(map[string]any)["preferred_behavior"] != "show_directly" {
 		t.Fatalf("hints = %+v", result["hints"])
@@ -477,9 +481,18 @@ func TestWrapToolResultUsesDiagramCollectionForMultipleCompleteBlocks(t *testing
 	if result["type"] != "diagram_collection" || result["schema"] != SchemaDiagramCollection {
 		t.Fatalf("collection identity = %+v", result)
 	}
-	data := result["data"].(map[string]any)
-	if diagrams, ok := data["diagrams"].([]any); !ok || len(diagrams) != 2 {
+	structured := wrapped.StructuredContent.(map[string]any)
+	data, _ := structured["data"].(map[string]any)
+	encodedDiagrams, err := json.Marshal(data["diagrams"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var diagrams []any
+	if err := json.Unmarshal(encodedDiagrams, &diagrams); err != nil || len(diagrams) != 2 {
 		t.Fatalf("collection data = %+v", data)
+	}
+	if result["data"] != nil {
+		t.Fatalf("metadata must not copy business data: %+v", result["data"])
 	}
 }
 
@@ -510,6 +523,44 @@ func TestWrapToolResultUsesStableToolSemantics(t *testing.T) {
 				t.Fatalf("presentation = %+v", presentation)
 			}
 		})
+	}
+}
+
+func TestWrapToolResultDoesNotDuplicateExecuteOrReadPayload(t *testing.T) {
+	stdout := strings.Repeat("x", 8000)
+	content := strings.Repeat("line\n", 400)
+	execute := WrapToolResult("execute", ResultContext{}, mcpresult.NewStructured(map[string]any{
+		"command": "python -", "stdout": stdout, "exit_code": 0,
+	}, "succeeded"))
+	executeText := execute.Content[0].(*mcp.TextContent).Text
+	if strings.Contains(executeText, stdout) {
+		t.Fatalf("execute text copied full stdout (%d runes)", len([]rune(executeText)))
+	}
+	if !strings.Contains(executeText, "python -") {
+		t.Fatalf("execute text missing command: %q", executeText)
+	}
+	executeEnvelope := decodeEnvelope(t, execute)["mcpx"].(map[string]any)["result"].(map[string]any)
+	if executeEnvelope["data"] != nil {
+		t.Fatalf("execute metadata copied data: %+v", executeEnvelope["data"])
+	}
+	encodedMeta, _ := json.Marshal(execute.Meta[ResultMetadataKey])
+	if len(encodedMeta) > len(stdout) {
+		t.Fatalf("execute metadata larger than payload: meta=%d stdout=%d", len(encodedMeta), len(stdout))
+	}
+
+	read := WrapToolResult("read", ResultContext{}, mcpresult.NewStructured(map[string]any{
+		"path": "big.go", "content": content, "sha256": "abc", "truncated": true,
+	}, "succeeded"))
+	readText := read.Content[0].(*mcp.TextContent).Text
+	if strings.Contains(readText, content) {
+		t.Fatalf("read text copied file content: %q", readText)
+	}
+	if !strings.Contains(readText, "`big.go`") {
+		t.Fatalf("read text missing path: %q", readText)
+	}
+	readEnvelope := decodeEnvelope(t, read)["mcpx"].(map[string]any)["result"].(map[string]any)
+	if readEnvelope["data"] != nil {
+		t.Fatalf("read metadata copied data: %+v", readEnvelope["data"])
 	}
 }
 
