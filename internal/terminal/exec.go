@@ -32,6 +32,7 @@ func Exec(ctx context.Context, opts ExecOptions) (Result, error) {
 	defer cancel()
 
 	cmd := commandShell(ctx, opts.Command)
+	configureProcess(cmd)
 	cmd.Dir = opts.WorkDir
 	if len(opts.ExtraEnv) > 0 {
 		cmd.Env = append(cmd.Environ(), opts.ExtraEnv...)
