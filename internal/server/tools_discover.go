@@ -8,9 +8,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"mcpx/internal/approval"
 	"mcpx/internal/envelope"
-	"mcpx/internal/idempotency"
 	"mcpx/internal/mcpproxy"
 	"mcpx/internal/mcpresult"
 	"mcpx/internal/remotesession"
@@ -172,10 +170,6 @@ func (r *Runtime) preflightSkillToolCall(ctx context.Context, req *mcp.CallToolR
 	if err := validateDiscoveryArguments(sk.Manifest.ArgumentsSchema, arguments); err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_ARGUMENT_INVALID", err.Error())
 	}
-	risk := skillExecutionRisk(sk)
-	if confirmation := r.extensionConfirmationGate(ctx, envReq, principal.ID, remote, "skill_tool", name, currentRevision, risk); confirmation != nil {
-		return confirmation, nil
-	}
 	return nil, nil
 }
 
@@ -326,27 +320,22 @@ func (r *Runtime) preflightMCPToolCallOnSession(ctx context.Context, req *mcp.Ca
 		result, resultErr := r.terminalError(envReq, remote.ID, remote.WorkspaceName, "MCP_ARGUMENT_INVALID", err.Error())
 		return result, nil, resultErr
 	}
-	risk := mcpExecutionRisk(upstream)
-	if confirmation := r.extensionConfirmationGate(ctx, envReq, principal.ID, remote, "mcp_tool", object, currentRevision, risk); confirmation != nil {
-		return confirmation, nil, nil
-	}
 	return nil, upstream, nil
 }
 
 type extensionRisk struct {
-	ReadOnly             bool
-	Destructive          bool
-	Idempotent           bool
-	OpenWorld            bool
-	ConfirmationRequired bool
-	Classification       string
-	Permissions          []string
+	ReadOnly       bool
+	Destructive    bool
+	Idempotent     bool
+	OpenWorld      bool
+	Classification string
+	Permissions    []string
 }
 
 func (risk extensionRisk) publicData() map[string]any {
 	data := map[string]any{
 		"read_only": risk.ReadOnly, "destructive": risk.Destructive, "idempotent": risk.Idempotent,
-		"open_world": risk.OpenWorld, "confirmation_required": risk.ConfirmationRequired,
+		"open_world":     risk.OpenWorld,
 		"classification": risk.Classification,
 	}
 	if len(risk.Permissions) > 0 {
@@ -367,14 +356,14 @@ func skillExecutionRisk(sk skill.Skill) extensionRisk {
 		}
 	}
 	return extensionRisk{
-		Destructive: destructive, OpenWorld: true, ConfirmationRequired: true,
+		Destructive: destructive, OpenWorld: true,
 		Classification: "skill_executable", Permissions: append([]string(nil), sk.Manifest.Permissions...),
 	}
 }
 
 func mcpExecutionRisk(tool *mcp.Tool) extensionRisk {
 	if tool == nil || tool.Annotations == nil {
-		return extensionRisk{OpenWorld: true, ConfirmationRequired: true, Classification: "upstream_mcp_unknown_risk"}
+		return extensionRisk{OpenWorld: true, Classification: "upstream_mcp_unknown_risk"}
 	}
 	readOnly := tool.Annotations.ReadOnlyHint
 	// MCP defines destructiveHint=true as the default for non-read-only
@@ -389,112 +378,7 @@ func mcpExecutionRisk(tool *mcp.Tool) extensionRisk {
 	}
 	return extensionRisk{
 		ReadOnly: readOnly, Destructive: destructive, Idempotent: tool.Annotations.IdempotentHint, OpenWorld: openWorld,
-		ConfirmationRequired: destructive || !readOnly || openWorld,
-		Classification:       "upstream_mcp_annotations",
-	}
-}
-
-func extensionConfirmationContentKey(principalID, operation, target, revision string, payload map[string]any) string {
-	// purpose is semantic/audit context only. Confirmation matching must follow
-	// the actual effect fingerprint so a rephrased requirement does not create
-	// a new approval for the same target, revision, and arguments.
-	return skillRevision(strings.Join([]string{
-		principalID, operation, target, revision, cleanIdempotencyFingerprint(operation, payload),
-	}, "\x00"))
-}
-
-func (r *Runtime) pendingExtensionConfirmation(remoteSessionID, principalID, operation, contentKey string) (approval.Pending, bool) {
-	for _, pending := range r.approvals.ListRemoteSession(remoteSessionID) {
-		if pending.PrincipalID == principalID && pending.Tool == operation && pending.ContentKey == contentKey {
-			return pending, true
-		}
-	}
-	return approval.Pending{}, false
-}
-
-func (r *Runtime) extensionReplayKnown(ctx context.Context, remote remotesession.Session, principalID, operation string, payload map[string]any) bool {
-	if r.idempotency == nil || !boolPayload(payload, "user_confirmed") {
-		return false
-	}
-	value := strings.TrimSpace(stringPayload(payload, "idempotency_key"))
-	if value == "" {
-		return false
-	}
-	// Only a completed request proves the same operation was confirmed and
-	// executed before. A pending placeholder — including the caller's own
-	// just-claimed record — must not bypass the confirmation gate.
-	record, ok, err := r.idempotency.Lookup(ctx, idempotency.Key{RemoteSessionID: remote.ID, PrincipalID: principalID, Operation: operation, Value: value})
-	if err != nil || !ok {
-		return false
-	}
-	return record.State == idempotency.StateSucceeded || record.State == idempotency.StateFailed
-}
-
-func (r *Runtime) extensionConfirmationGate(ctx context.Context, envReq envelope.Request, principalID string, remote remotesession.Session, operation, target, revision string, risk extensionRisk) *mcp.CallToolResult {
-	if !risk.ConfirmationRequired {
-		return nil
-	}
-	contentKey := extensionConfirmationContentKey(principalID, operation, target, revision, envReq.Payload)
-	pending, pendingOK := r.pendingExtensionConfirmation(remote.ID, principalID, operation, contentKey)
-	if operation == "mcp_tool" {
-		confirmationKey := strings.TrimSpace(stringPayload(envReq.Payload, "confirmation_key"))
-		if pendingOK && confirmationKey != "" && confirmationKey == pending.ConfirmationToken {
-			return nil
-		}
-	} else if boolPayload(envReq.Payload, "user_confirmed") && (pendingOK || r.extensionReplayKnown(ctx, remote, principalID, operation, envReq.Payload)) {
-		return nil
-	}
-	if !pendingOK {
-		var err error
-		pending, err = r.approvals.PutPending(approval.Pending{
-			Tool: operation, Summary: target, Purpose: stringPayload(envReq.Payload, "purpose"), Scope: "workspace",
-			RequestID: envReq.RequestID, Workspace: remote.WorkspaceName, RemoteSessionID: remote.ID,
-			PrincipalID: principalID, ContentKey: contentKey,
-		})
-		if err != nil {
-			result, _ := r.terminalError(envReq, remote.ID, remote.WorkspaceName, "CONFIRMATION_STORE_ERROR", err.Error())
-			return result
-		}
-	}
-	data := map[string]any{
-		"target": target, "purpose": stringPayload(envReq.Payload, "purpose"), "risk": risk.publicData(),
-		"confirmation_required": true,
-	}
-	if operation == "mcp_tool" {
-		data["confirmation_key"] = pending.ConfirmationToken
-		data["summary"] = "该 MCP 调用可能产生副作用；请向用户展示目标、用途和风险，确认后携带 waiting_confirmation 返回的 confirmation_key，以相同业务参数重试。"
-	} else {
-		data["user_confirmed_required"] = true
-		data["summary"] = "该扩展调用可能产生副作用；请向用户展示目标、用途和风险，确认后以相同业务参数设置 user_confirmed=true 重试。"
-	}
-	response := envelope.Fail(envelope.StatusNeedConfirmation, envReq.RequestID, remote.WorkspaceName, data, "USER_CONFIRMATION_REQUIRED", "扩展调用等待用户语义确认")
-	response.RemoteSessionID = remote.ID
-	if response.Error != nil {
-		arguments := map[string]any{"action": "call", "remote_session_id": remote.ID, "purpose": stringPayload(envReq.Payload, "purpose")}
-		for _, key := range []string{"name", "server", "tool", "idempotency_key"} {
-			if value, ok := envReq.Payload[key]; ok {
-				arguments[key] = value
-			}
-		}
-		// Extension arguments may contain a secret. Keep the target and require
-		// the caller to reuse its original arguments instead of echoing them
-		// into an error/recovery payload.
-		if operation == "mcp_tool" {
-			arguments["confirmation_key"] = pending.ConfirmationToken
-			addRecoveryAction(&response, operation, "用户确认后使用相同 MCP 目标、原始 arguments 和用途重试，并携带 waiting_confirmation 返回的 confirmation_key", arguments)
-		} else {
-			arguments["user_confirmed"] = true
-			addRecoveryAction(&response, operation, "用户确认后使用相同扩展目标、原始 arguments 和用途重试，并设置 user_confirmed=true", arguments)
-		}
-	}
-	result, _ := r.resultJSON(response)
-	_ = pending
-	return result
-}
-
-func (r *Runtime) consumeExtensionConfirmation(remoteSessionID, principalID, operation, contentKey string) {
-	if pending, ok := r.pendingExtensionConfirmation(remoteSessionID, principalID, operation, contentKey); ok {
-		_, _ = r.approvals.Consume(pending.ID)
+		Classification: "upstream_mcp_annotations",
 	}
 }
 

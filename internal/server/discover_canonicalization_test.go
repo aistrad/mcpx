@@ -60,27 +60,30 @@ func TestExtensionToolSchemasUseUnifiedActionsWithoutPublicRevisionTokens(t *tes
 	}
 }
 
-func TestMCPExecutionRiskUsesConservativeAnnotationDefaults(t *testing.T) {
+func TestMCPExecutionRiskPreservesAnnotationsForClientJudgment(t *testing.T) {
 	falseValue := false
 	trueValue := true
 
 	closedReadOnly := mcpExecutionRisk(&mcp.Tool{Annotations: &mcp.ToolAnnotations{
 		ReadOnlyHint: true, DestructiveHint: &falseValue, OpenWorldHint: &falseValue,
 	}})
-	if closedReadOnly.ConfirmationRequired || !closedReadOnly.ReadOnly || closedReadOnly.OpenWorld {
+	if !closedReadOnly.ReadOnly || closedReadOnly.Destructive || closedReadOnly.OpenWorld {
 		t.Fatalf("closed read-only MCP risk=%+v", closedReadOnly)
 	}
 
 	openReadOnly := mcpExecutionRisk(&mcp.Tool{Annotations: &mcp.ToolAnnotations{
 		ReadOnlyHint: true, DestructiveHint: &falseValue, OpenWorldHint: &trueValue,
 	}})
-	if !openReadOnly.ConfirmationRequired || !openReadOnly.OpenWorld {
-		t.Fatalf("open-world MCP call must be confirmation-gated=%+v", openReadOnly)
+	if !openReadOnly.ReadOnly || openReadOnly.Destructive || !openReadOnly.OpenWorld {
+		t.Fatalf("open-world annotation was not preserved=%+v", openReadOnly)
 	}
 
 	unknown := mcpExecutionRisk(&mcp.Tool{})
-	if !unknown.ConfirmationRequired || !unknown.OpenWorld {
-		t.Fatalf("missing MCP annotations must remain confirmation-gated=%+v", unknown)
+	if !unknown.OpenWorld || unknown.Classification != "upstream_mcp_unknown_risk" {
+		t.Fatalf("missing MCP annotations must remain visibly unknown=%+v", unknown)
+	}
+	if _, exists := unknown.publicData()["confirmation_required"]; exists {
+		t.Fatalf("risk metadata must not impose a server-side confirmation decision: %+v", unknown.publicData())
 	}
 }
 

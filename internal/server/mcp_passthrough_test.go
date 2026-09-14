@@ -144,7 +144,7 @@ for line in sys.stdin:
 	}
 }
 
-func TestMCPToolUpstreamIsErrorPassesThroughConsumesConfirmationAndReplays(t *testing.T) {
+func TestMCPToolUpstreamIsErrorPassesThroughAndReplays(t *testing.T) {
 	rt := newWorkspaceRuntime(t, "demo")
 	rt.cfg.Discovery.MCP.Enabled = true
 	workspace, _ := rt.reg.Get("demo")
@@ -201,14 +201,7 @@ for line in sys.stdin:
 		"action": "call", "remote_session_id": remoteID, "purpose": "exercise upstream business failure", "intent": "test operation",
 		"server": "failing", "tool": "fail", "arguments": map[string]any{}, "idempotency_key": "mcp-failure-1",
 	}
-	waiting := callEnvelope(t, rt.toolHandlers["mcp_tool"], context.Background(), request)
-	if waiting["status"] != "waiting_confirmation" || errorCode(waiting) != "user_confirmation_required" {
-		t.Fatalf("unannotated tool must require confirmation: %+v", waiting)
-	}
-
-	confirmed := cloneMap(request)
-	confirmed["confirmation_key"] = mcpConfirmationKey(t, waiting)
-	failed := callRawToolResult(t, rt.toolHandlers["mcp_tool"], confirmed)
+	failed := callRawToolResult(t, rt.toolHandlers["mcp_tool"], request)
 	assertPassthroughResult(t, failed, remoteID, "upstream rejected after partial effect", true, false)
 	if failed.Meta["provider"] != "fake-failure" {
 		t.Fatalf("ordinary upstream metadata was lost: %+v", failed.Meta)
@@ -217,15 +210,9 @@ for line in sys.stdin:
 	if structured["code"] != "UPSTREAM_REJECTED" || structured["partial"] != true {
 		t.Fatalf("upstream structured failure was rewritten: %+v", failed.StructuredContent)
 	}
-	for _, pending := range rt.approvals.ListRemoteSession(remoteID) {
-		if pending.Tool == "mcp_tool" {
-			t.Fatalf("confirmation was not consumed after upstream IsError result: %+v", pending)
-		}
-	}
-
 	startsAfterFailure := fakeMCPStartCount(t, startLog)
 	rt.cfg.Discovery.MCP.Enabled = false
-	replay := callRawToolResult(t, rt.toolHandlers["mcp_tool"], confirmed)
+	replay := callRawToolResult(t, rt.toolHandlers["mcp_tool"], request)
 	assertPassthroughResult(t, replay, remoteID, "upstream rejected after partial effect", true, true)
 	if fakeMCPStartCount(t, startLog) != startsAfterFailure {
 		t.Fatalf("failed idempotency replay restarted upstream MCP: before=%d after=%d", startsAfterFailure, fakeMCPStartCount(t, startLog))

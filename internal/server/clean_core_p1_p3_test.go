@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -362,8 +361,8 @@ arguments_schema:
 	}
 	describedData := described["data"].(map[string]any)
 	risk, _ := describedData["risk"].(map[string]any)
-	if risk["confirmation_required"] != true || risk["destructive"] != false {
-		t.Fatalf("executable skill risk=%+v", risk)
+	if risk["destructive"] != false || risk["open_world"] != true || risk["confirmation_required"] != nil {
+		t.Fatalf("executable skill risk must be descriptive only=%+v", risk)
 	}
 	invalid := callEnvelope(t, rt.toolSkillTool, context.Background(), map[string]any{
 		"action": "call", "remote_session_id": remoteID, "purpose": "publish checked value", "name": "publish", "arguments": map[string]any{"extra": "x"},
@@ -374,22 +373,9 @@ arguments_schema:
 	request := map[string]any{
 		"action": "call", "remote_session_id": remoteID, "purpose": "publish checked value", "name": "publish", "arguments": map[string]any{"value": "secret-not-in-recovery"},
 	}
-	waiting := callEnvelope(t, rt.toolSkillTool, context.Background(), request)
-	if waiting["status"] != "waiting_confirmation" || errorCode(waiting) != "user_confirmation_required" {
-		t.Fatalf("skill confirmation=%+v", waiting)
-	}
-	encodedWaiting, err := json.Marshal(waiting)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(encodedWaiting), "secret-not-in-recovery") {
-		t.Fatalf("confirmation response must not echo extension arguments: %s", encodedWaiting)
-	}
-	confirmed := cloneMap(request)
-	confirmed["user_confirmed"] = true
-	completed := callEnvelope(t, rt.toolSkillTool, context.Background(), confirmed)
+	completed := callEnvelope(t, rt.toolSkillTool, context.Background(), request)
 	if !statusOK(completed) || !strings.Contains(completed["data"].(map[string]any)["stdout"].(string), "published") {
-		t.Fatalf("confirmed executable skill=%+v", completed)
+		t.Fatalf("executable skill must run without server confirmation=%+v", completed)
 	}
 
 	changedManifest := strings.Replace(manifest, "required: [value]", "required: [replacement]", 1)
@@ -469,25 +455,15 @@ for line in sys.stdin:
 	callRequest := map[string]any{
 		"action": "call", "remote_session_id": remoteID, "purpose": "call the fake MCP", "server": "fake", "tool": "echo", "arguments": map[string]any{"value": "one"},
 	}
-	waiting := callEnvelope(t, rt.toolMCPTool, context.Background(), callRequest)
-	if waiting["status"] != "waiting_confirmation" || errorCode(waiting) != "user_confirmation_required" {
-		t.Fatalf("unannotated upstream call must require confirmation=%+v", waiting)
-	}
-	startsAfterPreflight := fakeMCPStartCount(t, startLog)
-	if startsAfterPreflight != startsBeforeCall+1 {
-		t.Fatalf("preflight must start exactly one upstream instance: before=%d after=%d", startsBeforeCall, startsAfterPreflight)
-	}
-	confirmedRequest := cloneMap(callRequest)
-	confirmedRequest["confirmation_key"] = mcpConfirmationKey(t, waiting)
-	confirmed, err := rt.toolMCPTool(context.Background(), mcpresult.Request(confirmedRequest))
+	called, err := rt.toolMCPTool(context.Background(), mcpresult.Request(callRequest))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if confirmed == nil || confirmed.IsError || mcpresult.FirstText(confirmed) != "echo:one" {
-		t.Fatalf("confirmed mcp_tool call=%+v", confirmed)
+	if called == nil || called.IsError || mcpresult.FirstText(called) != "echo:one" {
+		t.Fatalf("unannotated mcp_tool must execute without server confirmation=%+v", called)
 	}
-	if startsAfterConfirmed := fakeMCPStartCount(t, startLog); startsAfterConfirmed != startsAfterPreflight+1 {
-		t.Fatalf("schema check and call must share one upstream instance: before=%d after=%d", startsAfterPreflight, startsAfterConfirmed)
+	if startsAfterCall := fakeMCPStartCount(t, startLog); startsAfterCall != startsBeforeCall+1 {
+		t.Fatalf("schema check and call must share one upstream instance: before=%d after=%d", startsBeforeCall, startsAfterCall)
 	}
 }
 
@@ -594,8 +570,8 @@ for line in sys.stdin:
 		t.Fatalf("echo describe=%+v", described)
 	}
 	describedRisk, _ := described["data"].(map[string]any)["risk"].(map[string]any)
-	if describedRisk["read_only"] != true || describedRisk["confirmation_required"] != false {
-		t.Fatalf("upstream annotations must drive call policy: %+v", describedRisk)
+	if describedRisk["read_only"] != true || describedRisk["open_world"] != false || describedRisk["confirmation_required"] != nil {
+		t.Fatalf("upstream annotations must remain descriptive without server confirmation policy: %+v", describedRisk)
 	}
 	if err := os.WriteFile(schemaPath, []byte(`{"type":"object","properties":{"replacement":{"type":"string"}},"required":["replacement"]}`), 0o600); err != nil {
 		t.Fatal(err)

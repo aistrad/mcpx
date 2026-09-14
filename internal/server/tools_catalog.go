@@ -455,7 +455,6 @@ func (r *Runtime) registerConsolidatedToolsCatalog(s *mcp.Server) {
 		"name":              stringSchema("Skill 名称"),
 		"purpose":           stringSchema("调用 Skill 的用户目标"),
 		"arguments":         map[string]any{"type": "object", "additionalProperties": true},
-		"user_confirmed":    booleanSchema("用户已确认同一 Skill 调用"),
 		"idempotency_key":   stringSchema("同一调用重试时复用的幂等键"),
 		"execution_mode":    enumSchema("执行模式", "sync", "async"),
 	}
@@ -473,7 +472,6 @@ func (r *Runtime) registerConsolidatedToolsCatalog(s *mcp.Server) {
 		"tool":              stringSchema("上游 MCP Tool 名称"),
 		"purpose":           stringSchema("调用上游 MCP 的用户目标"),
 		"arguments":         map[string]any{"type": "object", "additionalProperties": true},
-		"confirmation_key":  stringSchema("waiting_confirmation 返回的用户确认 key；确认后原样携带，Runtime 会校验当前 pending approval"),
 		"idempotency_key":   stringSchema("同一调用重试时复用的幂等键"),
 		"execution_mode":    enumSchema("执行模式", "sync", "async"),
 	}

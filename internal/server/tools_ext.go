@@ -359,7 +359,7 @@ func augmentMCPCallResult(result *mcp.CallToolResult, envReq envelope.Request, r
 }
 
 func (r *Runtime) toolMCPCallOnSession(ctx context.Context, req *mcp.CallToolRequest, client *mcpproxy.ClientSession, upstreamTool *mcp.Tool) (*mcp.CallToolResult, error) {
-	envReq, principal, remote, fail := r.changeRequest(ctx, req, true)
+	envReq, _, remote, fail := r.changeRequest(ctx, req, true)
 	if fail != nil {
 		return fail, nil
 	}
@@ -376,16 +376,6 @@ func (r *Runtime) toolMCPCallOnSession(ctx context.Context, req *mcp.CallToolReq
 	}
 	if res == nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "MCP_CALL_FAILED", "upstream MCP returned no CallToolResult")
-	}
-
-	// A CallToolResult proves tools/call reached the upstream tool, regardless
-	// of IsError. Consume one-shot confirmation before any MCPX-side result
-	// shaping/size checks so a partially effectful business failure cannot reuse it.
-	risk := mcpExecutionRisk(upstreamTool)
-	if risk.ConfirmationRequired {
-		revision := mcpRevision([]*mcp.Tool{upstreamTool})
-		contentKey := extensionConfirmationContentKey(principal.ID, "mcp_tool", serverName+"/"+toolName, revision, envReq.Payload)
-		r.consumeExtensionConfirmation(remote.ID, principal.ID, "mcp_tool", contentKey)
 	}
 
 	augmentMCPCallResult(res, envReq, remote.ID, remote.WorkspaceName, serverName, toolName)
@@ -502,7 +492,7 @@ func skillSummaryItems(skills []skill.Skill) []map[string]any {
 }
 
 func (r *Runtime) toolSkillExecute(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-	envReq, principal, remote, fail := r.changeRequest(ctx, req, true)
+	envReq, _, remote, fail := r.changeRequest(ctx, req, true)
 	if fail != nil {
 		return fail, nil
 	}
@@ -527,12 +517,6 @@ func (r *Runtime) toolSkillExecute(ctx context.Context, req *mcp.CallToolRequest
 		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, out, "SKILL_FAILED", fmt.Sprintf("Skill exited with code %d", exitCode))
 		response.RemoteSessionID = remote.ID
 		return r.resultJSON(response)
-	}
-	risk := skillExecutionRisk(sk)
-	if risk.ConfirmationRequired {
-		revision := skillDefinitionRevision(sk)
-		contentKey := extensionConfirmationContentKey(principal.ID, "skill_tool", name, revision, envReq.Payload)
-		r.consumeExtensionConfirmation(remote.ID, principal.ID, "skill_tool", contentKey)
 	}
 	r.logAudit(audit.Event{RequestID: envReq.RequestID, RemoteSessionID: remote.ID, Workspace: remote.WorkspaceName, Tool: firstString(toolInvocationName(ctx), "skill_tool"), Status: "ok", Detail: map[string]any{"name": name}})
 	return compactToolResult(out, fmt.Sprintf("Skill %s completed.", name)), nil
