@@ -48,6 +48,22 @@ func clientInfoFromContext(ctx context.Context) (name, version string) {
 	return "unknown", ""
 }
 
+func (r *Runtime) touchRemoteSessionActivity(ctx context.Context, req envelope.Request) {
+	if r == nil || r.remote == nil {
+		return
+	}
+	sessionID := strings.TrimSpace(req.RemoteSessionID)
+	if sessionID == "" {
+		return
+	}
+	principal, err := r.principalFromContext(ctx)
+	if err != nil {
+		return
+	}
+	name, version := clientInfoFromContext(ctx)
+	r.remote.Touch(ctx, principal, sessionID, name, version)
+}
+
 func (r *Runtime) remoteRequest(ctx context.Context, req *mcp.CallToolRequest) (envelope.Request, auth.Principal, *mcp.CallToolResult) {
 	envReq, err := r.parseEnv(ctx, req)
 	if err != nil {

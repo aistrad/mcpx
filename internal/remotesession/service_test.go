@@ -123,6 +123,77 @@ func TestUpdateUsesOptimisticVersion(t *testing.T) {
 	}
 }
 
+func TestTouchUpdatesLastActiveAtAndThrottles(t *testing.T) {
+	service, _ := testService(t)
+	owner := testPrincipal("owner")
+	stranger := testPrincipal("stranger")
+	clock := time.Date(2026, 9, 14, 12, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return clock }
+
+	created, err := service.Create(context.Background(), owner, CreateInput{
+		WorkspaceName: "mcpx", WorkspacePath: t.TempDir(), Label: "touch",
+		ClientName: "client-a", ClientVersion: "1",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created.Session.LastActiveAt.Equal(clock) {
+		t.Fatalf("create last_active_at=%v want %v", created.Session.LastActiveAt, clock)
+	}
+
+	clock = clock.Add(2 * time.Second)
+	service.Touch(context.Background(), owner, created.Session.ID, "client-a", "1")
+	got, err := service.Get(context.Background(), owner, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActiveAt.Equal(clock) {
+		t.Fatalf("touched last_active_at=%v want %v", got.LastActiveAt, clock)
+	}
+
+	throttled := clock
+	service.Touch(context.Background(), owner, created.Session.ID, "client-a", "1")
+	got, err = service.Get(context.Background(), owner, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActiveAt.Equal(throttled) {
+		t.Fatalf("throttled last_active_at=%v want %v", got.LastActiveAt, throttled)
+	}
+
+	clock = clock.Add(time.Second)
+	service.Touch(context.Background(), owner, created.Session.ID, "client-a", "1")
+	got, err = service.Get(context.Background(), owner, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActiveAt.Equal(clock) {
+		t.Fatalf("second touch last_active_at=%v want %v", got.LastActiveAt, clock)
+	}
+
+	var memberActive, clientSeen int64
+	if err := service.db.QueryRow(`SELECT last_active_at FROM remote_session_members WHERE remote_session_id = ? AND principal_id = ?`,
+		created.Session.ID, owner.ID).Scan(&memberActive); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.db.QueryRow(`SELECT last_seen_at FROM remote_session_clients WHERE remote_session_id = ? AND principal_id = ?`,
+		created.Session.ID, owner.ID).Scan(&clientSeen); err != nil {
+		t.Fatal(err)
+	}
+	if memberActive != clock.UnixMilli() || clientSeen != clock.UnixMilli() {
+		t.Fatalf("member last_active_at=%d client last_seen_at=%d want %d", memberActive, clientSeen, clock.UnixMilli())
+	}
+
+	service.Touch(context.Background(), stranger, created.Session.ID, "client-b", "1")
+	got, err = service.Get(context.Background(), owner, created.Session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.LastActiveAt.Equal(clock) {
+		t.Fatalf("unauthorized touch changed last_active_at to %v", got.LastActiveAt)
+	}
+}
+
 func TestSessionSurvivesStoreReopen(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcpx.db")

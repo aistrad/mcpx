@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -213,4 +214,56 @@ func TestCleanCoreSessionListDiscoversExistingSession(t *testing.T) {
 	if len(idSessions) != 1 {
 		t.Fatalf("session list must support ID lookup: %+v", idData)
 	}
+}
+
+func TestToolCallRefreshesSessionLastActiveAt(t *testing.T) {
+	rt := newWorkspaceRuntime(t, "demo")
+	handler := rt.toolHandlers["session"]
+	if handler == nil {
+		t.Fatal("session handler is not registered")
+	}
+	opened := callEnvelope(t, handler, context.Background(), map[string]any{
+		"action": "open", "workspace": "demo", "label": "touch-me",
+	})
+	remoteID, _ := opened["remote_session_id"].(string)
+	if remoteID == "" {
+		t.Fatalf("session open did not return remote_session_id: %+v", opened)
+	}
+	listed := callEnvelope(t, handler, context.Background(), map[string]any{
+		"action": "list", "workspace": "demo", "query": remoteID,
+	})
+	first := sessionListLastActiveAt(t, listed)
+	time.Sleep(1100 * time.Millisecond)
+	resumed := callEnvelope(t, handler, context.Background(), map[string]any{
+		"action": "open", "remote_session_id": remoteID,
+	})
+	if !statusOK(resumed) {
+		t.Fatalf("session resume failed: %+v", resumed)
+	}
+	listed = callEnvelope(t, handler, context.Background(), map[string]any{
+		"action": "list", "workspace": "demo", "query": remoteID,
+	})
+	second := sessionListLastActiveAt(t, listed)
+	if !second.After(first) {
+		t.Fatalf("last_active_at did not advance after resume: first=%s second=%s", first, second)
+	}
+}
+
+func sessionListLastActiveAt(t *testing.T, listed map[string]any) time.Time {
+	t.Helper()
+	data, _ := listed["data"].(map[string]any)
+	sessions, _ := data["sessions"].([]any)
+	if len(sessions) != 1 {
+		t.Fatalf("session list=%+v", listed)
+	}
+	item, _ := sessions[0].(map[string]any)
+	raw, _ := item["last_active_at"].(string)
+	parsed, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339, raw)
+	}
+	if err != nil {
+		t.Fatalf("last_active_at=%q: %v", raw, err)
+	}
+	return parsed
 }

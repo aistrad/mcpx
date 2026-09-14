@@ -28,11 +28,15 @@ var (
 	ErrInvalidInput = errors.New("invalid remote session request")
 )
 
+const activityTouchMinInterval = time.Second
+
 type Service struct {
-	db         *sql.DB
-	now        func() time.Time
-	observer   EventObserver
-	observerMu sync.RWMutex
+	db          *sql.DB
+	now         func() time.Time
+	observer    EventObserver
+	observerMu  sync.RWMutex
+	lastTouch   map[string]time.Time
+	lastTouchMu sync.Mutex
 }
 
 // EventObserver receives a committed Remote Session event. Observers must
@@ -519,6 +523,49 @@ func (s *Service) Events(ctx context.Context, principal auth.Principal, sessionI
 		events = append(events, event)
 	}
 	return events, rows.Err()
+}
+
+// Touch records that principal just used sessionID. last_active_at is the
+// field session list and guidance use to pick a session to resume. Writes are
+// throttled to one per principal+session per second so a tool burst does not
+// turn into a SQLite write per call. Closed sessions still update: recency
+// should reflect last real use. Failures are ignored by callers.
+func (s *Service) Touch(ctx context.Context, principal auth.Principal, sessionID, clientName, clientVersion string) {
+	if s == nil || s.db == nil {
+		return
+	}
+	sessionID = strings.TrimSpace(sessionID)
+	if sessionID == "" || strings.TrimSpace(principal.ID) == "" {
+		return
+	}
+	now := s.now().UTC()
+	key := principal.ID + "\x00" + sessionID
+	s.lastTouchMu.Lock()
+	if s.lastTouch == nil {
+		s.lastTouch = make(map[string]time.Time)
+	}
+	if previous, ok := s.lastTouch[key]; ok && !now.Before(previous) && now.Sub(previous) < activityTouchMinInterval {
+		s.lastTouchMu.Unlock()
+		return
+	}
+	s.lastTouch[key] = now
+	s.lastTouchMu.Unlock()
+
+	if _, err := s.Get(ctx, principal, sessionID); err != nil {
+		return
+	}
+	millis := now.UnixMilli()
+	_, _ = s.db.ExecContext(ctx, `UPDATE remote_sessions SET last_active_at = ? WHERE id = ?`, millis, sessionID)
+	_, _ = s.db.ExecContext(ctx, `UPDATE remote_session_members SET last_active_at = ? WHERE remote_session_id = ? AND principal_id = ?`,
+		millis, sessionID, principal.ID)
+	if clientName == "" {
+		clientName = "unknown"
+	}
+	_, _ = s.db.ExecContext(ctx, `INSERT INTO remote_session_clients
+        (remote_session_id, principal_id, client_name, client_version, first_seen_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(remote_session_id, principal_id, client_name, client_version)
+        DO UPDATE SET last_seen_at = excluded.last_seen_at`,
+		sessionID, principal.ID, clientName, clientVersion, millis, millis)
 }
 
 func (s *Service) SetEnvironmentSnapshot(ctx context.Context, principal auth.Principal, sessionID, snapshotID string) error {
