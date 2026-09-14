@@ -64,9 +64,9 @@ type CommandAnalysis struct {
 }
 
 // AnalyzeCommand splits supported compound commands before evaluating policy.
-// &&, ||, and ; are safe control separators because each segment can be judged
-// independently before the original command is passed to the shell. Unsupported
-// shell features fail closed.
+// &&, ||, ;, |, and newlines are safe control separators because each segment
+// can be judged independently before the original command is passed to the
+// shell. Unsupported shell features fail closed.
 func AnalyzeCommand(rules config.CommandRules, command string) CommandAnalysis {
 	parsed, unsafe := commandSegments(command)
 	analysis := CommandAnalysis{Decision: Deny, Unsafe: unsafe}
@@ -118,8 +118,9 @@ func matchSegment(rules config.CommandRules, segment string) Decision {
 // HasUnsafeShellOperator reports active shell syntax that cannot be safely
 // preflighted. &&, ||, and ; are supported separators. A quoted heredoc whose
 // terminator closes the command is treated as literal stdin and can be audited
-// as one segment. Pipes, ordinary redirections, background operators, arbitrary
-// multiline shell, and command substitution remain rejected.
+// as one segment. Pipes and newlines are split like && / || / ; so each stage
+// can be audited. Ordinary redirections stay inside their segment. Background
+// operators, command substitution, and unquoted heredocs remain rejected.
 // Operators inside quotes or escaped with a backslash are literal content.
 func HasUnsafeShellOperator(command string) bool {
 	_, unsafe := commandSegments(command)
@@ -133,18 +134,21 @@ type commandSegment struct {
 
 // commandSegments scans shell control syntax without trying to fully parse a
 // shell language. It distinguishes active operators from quoted/escaped
-// literals and preserves supported && / || / ; separators for auditing.
+// literals and preserves supported && / || / ; / | / newline separators for
+// auditing. Empty trailing newline is allowed; dangling && / || / ; / | is not.
 func commandSegments(command string) ([]commandSegment, bool) {
 	segments := make([]commandSegment, 0, 2)
 	start := 0
 	var quote byte
 	escaped := false
+	lastOperator := ""
 	appendSegment := func(end int, operator string) bool {
 		segment := strings.TrimSpace(command[start:end])
 		if segment == "" {
 			return false
 		}
 		segments = append(segments, commandSegment{Command: segment, Operator: operator})
+		lastOperator = operator
 		return true
 	}
 
@@ -191,7 +195,10 @@ func commandSegments(command string) ([]commandSegment, bool) {
 				start = index + 1
 				continue
 			}
-			return nil, true
+			if !appendSegment(index, "|") {
+				return nil, true
+			}
+			start = index + 1
 		case '<':
 			if end, ok := quotedHeredocCommandEnd(command, index); ok {
 				if !appendSegment(end, "") {
@@ -199,9 +206,36 @@ func commandSegments(command string) ([]commandSegment, bool) {
 				}
 				return segments, false
 			}
+			if index+1 < len(command) && command[index+1] == '<' {
+				return nil, true
+			}
+		case '`':
 			return nil, true
-		case '>', '`', '\n', '\r':
-			return nil, true
+		case '\n':
+			if strings.TrimSpace(command[start:index]) == "" {
+				start = index + 1
+				continue
+			}
+			if !appendSegment(index, "\n") {
+				return nil, true
+			}
+			start = index + 1
+		case '\r':
+			end := index
+			next := index + 1
+			if next < len(command) && command[next] == '\n' {
+				next++
+			}
+			if strings.TrimSpace(command[start:end]) == "" {
+				start = next
+				index = next - 1
+				continue
+			}
+			if !appendSegment(end, "\n") {
+				return nil, true
+			}
+			start = next
+			index = next - 1
 		case '$':
 			if index+1 < len(command) && command[index+1] == '(' {
 				return nil, true
@@ -223,7 +257,19 @@ func commandSegments(command string) ([]commandSegment, bool) {
 			start = index + 1
 		}
 	}
-	if quote != 0 || escaped || !appendSegment(len(command), "") {
+	if quote != 0 || escaped {
+		return nil, true
+	}
+	tail := strings.TrimSpace(command[start:])
+	if tail != "" {
+		segments = append(segments, commandSegment{Command: tail, Operator: ""})
+		return segments, false
+	}
+	switch lastOperator {
+	case "|", "&&", "||", ";":
+		return nil, true
+	}
+	if len(segments) == 0 {
 		return nil, true
 	}
 	return segments, false

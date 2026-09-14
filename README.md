@@ -584,11 +584,11 @@ absolute path、`..` 越界和中间 symlink 仍拒绝。`move_out` 在 MCP `too
 现有命令策略、用途、Workspace 范围、用户确认与幂等键仍生效；确认绑定完整 argv，重试须保留相同参数和 `idempotency_key`。
 策略与审计中的命令文本仅用于展示和检查，实际执行始终使用原始数组。此能力不自动处理 GitHub 未知写入结果或 Git 传输恢复。
 
-`execute` 的 `command` 模式支持用 `&&`、`||` 和 `;` 组合简单命令。服务端会在启动 shell **之前**解析全部 segment，逐段应用
+`execute` 的 `command` 模式支持用 `&&`、`||`、`;`、`|` 和换行组合简单命令。服务端会在启动 shell **之前**解析全部 segment，逐段应用
 `deny` / `confirm` / `allow` 策略并记录结构化 `command_policy`；任一 segment 为 `deny` 时整条命令拒绝，
 任一 segment 为 `confirm` 时对整条冻结命令进行一次用户确认。只有全部 segment 通过，并且启用的
-preflight audit 成功写入后，原始 command 才会一次性交给 shell。管道、重定向、单个 `&`、换行、`$()`
-和反引号命令替换仍然拒绝。
+preflight audit 成功写入后，原始 command 才会一次性交给 shell。重定向留在所属段内一起审计。单个 `&`、
+`$()` 和反引号命令替换、未加引号的 heredoc，以及悬空的 `&&` / `||` / `;` / `|` 仍然拒绝。
 
 这里的“全部执行或拒绝”是**策略与审计入口的原子 gate**，不是文件系统事务或副作用回滚。shell 启动后仍保留
 原始条件语义：`a && b` 只在 `a` 成功后执行 `b`，`a || b` 只在 `a` 失败后执行 `b`；已经执行的 segment

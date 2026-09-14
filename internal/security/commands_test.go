@@ -65,23 +65,49 @@ func TestDefaultCommandPolicyAllowsUnmatchedCommands(t *testing.T) {
 }
 
 func TestMatchCommandRejectsUnsafeOperators(t *testing.T) {
-	// Active pipes, redirections, background operators, and command substitution
-	// cannot be split into independently judged segments and are rejected.
 	rules := config.CommandRules{}
 	for _, command := range []string{
-		"ls | sh",
-		"ls > out.txt",
-		"cat < in.txt",
 		"ls $(dangerous)",
 		"echo \"$(dangerous)\"",
 		"ls `id`",
 		"echo \"`id`\"",
 		"sleep 5 &",
-		"ls\nrm -rf x",
+		"echo ok |",
+		"echo ok &&",
+		"cat <<UNQUOTED\nbody\nUNQUOTED",
 	} {
 		if got := MatchCommand(rules, command); got != Deny {
 			t.Errorf("%q: got %s, want deny", command, got)
 		}
+	}
+}
+
+func TestMatchCommandAuditsPipesNewlinesAndRedirections(t *testing.T) {
+	rules := config.CommandRules{Deny: []string{`^rm\b`}}
+	for _, command := range []string{
+		"ps -axo pid=,command= | grep mcpx | head -20",
+		"ls /usr/bin | head -20 | wc -l",
+		"echo hi > out.txt",
+		"cat < in.txt",
+		"cd /tmp\nls -d /tmp\npwd",
+		"echo ok\n",
+	} {
+		if got := MatchCommand(rules, command); got == Deny {
+			t.Errorf("%q: got deny, want auditable allow/confirm", command)
+		}
+		if HasUnsafeShellOperator(command) {
+			t.Errorf("%q reported unsafe", command)
+		}
+	}
+	if got := MatchCommand(rules, "ls | rm -rf ./x"); got != Deny {
+		t.Fatalf("denied pipe stage got %s, want deny", got)
+	}
+	analysis := AnalyzeCommand(rules, "ps | grep mcpx | head")
+	if analysis.Unsafe || len(analysis.Segments) != 3 {
+		t.Fatalf("pipe analysis=%+v", analysis)
+	}
+	if analysis.Segments[0].Operator != "|" || analysis.Segments[1].Operator != "|" || analysis.Segments[2].Operator != "" {
+		t.Fatalf("pipe operators=%+v", analysis.Segments)
 	}
 }
 
