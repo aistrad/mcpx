@@ -37,6 +37,139 @@ type api struct {
 	app *application.App
 }
 
+// --- Cloudflare Tunnel ---
+
+func (a *api) handleCloudflareStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, currentCloudflareState())
+}
+
+func (a *api) handleGetCloudflareConfig(w http.ResponseWriter, r *http.Request) {
+	cfg, err := loadCloudflareDesktopConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cfg)
+}
+
+func (a *api) handlePutCloudflareConfig(w http.ResponseWriter, r *http.Request) {
+	var body cloudflareDesktopConfig
+	if !decodeJSON(w, r, &body) {
+		return
+	}
+	old, err := loadCloudflareDesktopConfig()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	if body.LastPublicURL == "" {
+		body.LastPublicURL = old.LastPublicURL
+	}
+	saved, err := saveCloudflareDesktopConfig(body)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, saved)
+}
+
+func (a *api) handleInstallCloudflared(w http.ResponseWriter, r *http.Request) {
+	status, err := installCloudflared()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *api) handleUninstallCloudflared(w http.ResponseWriter, r *http.Request) {
+	status, err := uninstallManagedCloudflared()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, status)
+}
+
+func (a *api) handleStartCloudflare(w http.ResponseWriter, r *http.Request) {
+	state, err := startCloudflareTunnel()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (a *api) handleStopCloudflare(w http.ResponseWriter, r *http.Request) {
+	if err := stopCloudflareTunnel(); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, currentCloudflareState())
+}
+
+func (a *api) handleCloudflareHealth(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, runCloudflareHealthCheck())
+}
+
+func (a *api) handleReadCloudflareLogs(w http.ResponseWriter, r *http.Request) {
+	state := currentCloudflareState()
+	writeLogChunk(w, state.LogPath, r.URL.Query().Get("offset"))
+}
+
+func (a *api) handleClearCloudflareLogs(w http.ResponseWriter, r *http.Request) {
+	state := currentCloudflareState()
+	if state.LogPath == "" {
+		writeError(w, http.StatusInternalServerError, "无法定位 Cloudflare 日志路径")
+		return
+	}
+	if err := os.Truncate(state.LogPath, 0); err != nil && !os.IsNotExist(err) {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func writeLogChunk(w http.ResponseWriter, path, rawOffset string) {
+	if path == "" {
+		writeError(w, http.StatusInternalServerError, "无法定位日志路径")
+		return
+	}
+	offset, _ := strconv.ParseInt(rawOffset, 10, 64)
+	file, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			writeJSON(w, http.StatusOK, map[string]any{"content": "", "offset": 0, "next_offset": 0, "size": 0})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	size := info.Size()
+	if offset > size || offset < 0 {
+		offset = 0
+	}
+	if size-offset > maxLogChunk {
+		offset = size - maxLogChunk
+	}
+	buf := make([]byte, size-offset)
+	read, readErr := file.ReadAt(buf, offset)
+	if readErr != nil && read == 0 {
+		buf = buf[:0]
+		read = 0
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"content": string(buf[:read]), "offset": offset,
+		"next_offset": offset + int64(read), "size": size,
+	})
+}
+
 func newAPI() *api {
 	a := &api{mux: http.NewServeMux()}
 
@@ -55,6 +188,17 @@ func newAPI() *api {
 	a.mux.HandleFunc("GET /config", a.handleGetConfig)
 	a.mux.HandleFunc("PUT /config", a.handlePutConfig)
 	a.mux.HandleFunc("POST /config/token", a.handleGenerateToken)
+
+	a.mux.HandleFunc("GET /cloudflare/status", a.handleCloudflareStatus)
+	a.mux.HandleFunc("GET /cloudflare/config", a.handleGetCloudflareConfig)
+	a.mux.HandleFunc("PUT /cloudflare/config", a.handlePutCloudflareConfig)
+	a.mux.HandleFunc("POST /cloudflare/install", a.handleInstallCloudflared)
+	a.mux.HandleFunc("POST /cloudflare/uninstall", a.handleUninstallCloudflared)
+	a.mux.HandleFunc("POST /cloudflare/start", a.handleStartCloudflare)
+	a.mux.HandleFunc("POST /cloudflare/stop", a.handleStopCloudflare)
+	a.mux.HandleFunc("POST /cloudflare/health", a.handleCloudflareHealth)
+	a.mux.HandleFunc("GET /cloudflare/logs", a.handleReadCloudflareLogs)
+	a.mux.HandleFunc("POST /cloudflare/logs/clear", a.handleClearCloudflareLogs)
 
 	a.mux.HandleFunc("POST /open", a.handleOpenPath)
 	return a
@@ -86,11 +230,11 @@ func (a *api) handleServiceAction(w http.ResponseWriter, r *http.Request) {
 	var err error
 	switch r.PathValue("action") {
 	case "start":
-		err = startService()
+		err = startMCPXStack()
 	case "stop":
-		err = stopService()
+		err = stopMCPXStack()
 	case "restart":
-		err = restartService()
+		err = restartMCPXStack()
 	default:
 		writeError(w, http.StatusNotFound, "未知操作")
 		return
@@ -317,10 +461,11 @@ func (a *api) handleClearLogs(w http.ResponseWriter, r *http.Request) {
 // --- 基础连接配置 ---
 
 type connectionConfig struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	AuthMode string `json:"auth_mode"`
-	Token    string `json:"token"`
+	Host           string `json:"host"`
+	Port           int    `json:"port"`
+	AuthMode       string `json:"auth_mode"`
+	Token          string `json:"token"`
+	OAuthServerURL string `json:"oauth_server_url"`
 	// EffectiveMode 是 auth.mode 留空时服务端实际采用的模式，只读展示用。
 	EffectiveMode string `json:"effective_mode"`
 }
@@ -332,15 +477,16 @@ func (a *api) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, connectionConfig{
-		Host:          cfg.Server.Host,
-		Port:          cfg.Server.Port,
-		AuthMode:      cfg.Auth.Mode,
-		Token:         cfg.Auth.Token,
-		EffectiveMode: config.EffectiveAuthMode(cfg.Auth),
+		Host:           cfg.Server.Host,
+		Port:           cfg.Server.Port,
+		AuthMode:       cfg.Auth.Mode,
+		Token:          cfg.Auth.Token,
+		OAuthServerURL: cfg.Auth.OAuth.ServerURL,
+		EffectiveMode:  config.EffectiveAuthMode(cfg.Auth),
 	})
 }
 
-// handlePutConfig 只改监听地址与鉴权三项，其余配置（安全策略、保留策略等）
+// handlePutConfig 只改监听地址、鉴权与 OAuth 公网 Origin，其余配置（安全策略、保留策略等）
 // 一律不碰，仍然由用户手改 config.yaml。
 func (a *api) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	var body connectionConfig
@@ -367,6 +513,7 @@ func (a *api) handlePutConfig(w http.ResponseWriter, r *http.Request) {
 	cfg.Server.Port = body.Port
 	cfg.Auth.Mode = body.AuthMode
 	cfg.Auth.Token = strings.TrimSpace(body.Token)
+	cfg.Auth.OAuth.ServerURL = strings.TrimRight(strings.TrimSpace(body.OAuthServerURL), "/")
 
 	if err := config.ValidateAuthMode(cfg.Auth); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -418,6 +565,10 @@ func (a *api) handleOpenPath(w http.ResponseWriter, r *http.Request) {
 		path = state.LogPath
 	case "config":
 		path = state.ConfigPath
+	case "cloudflare-log":
+		path = currentCloudflareState().LogPath
+	case "cloudflare-config":
+		path = currentCloudflareState().ConfigPath
 	default:
 		writeError(w, http.StatusBadRequest, "未知目标")
 		return

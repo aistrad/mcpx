@@ -44,8 +44,10 @@ type desktopApp struct {
 	window *application.WebviewWindow
 	api    *api
 
-	mu   sync.Mutex
-	last serviceState
+	mu                   sync.Mutex
+	last                 serviceState
+	lastCloudflare       cloudflareState
+	lastCloudflareHealth *cloudflareHealth
 }
 
 // trayOnlyFlag 让托盘静默驻留、不弹主窗口。开机自启注册的就是带这个参数的
@@ -176,12 +178,57 @@ func (d *desktopApp) pollStatus() {
 	}
 }
 
+func cloudflareStatusLabel(state cloudflareState) string {
+	switch state.Status {
+	case cloudflareStatusRunning:
+		if state.Mode != "" {
+			return fmt.Sprintf("状态：运行中 · %s · pid=%d", state.Mode, state.PID)
+		}
+		return fmt.Sprintf("状态：运行中 · pid=%d", state.PID)
+	case cloudflareStatusStarting:
+		return "状态：启动中"
+	case cloudflareStatusError:
+		return "状态：异常"
+	default:
+		if !state.Software.Installed {
+			return "状态：已停止 · cloudflared 未安装"
+		}
+		return "状态：已停止"
+	}
+}
+
+func (d *desktopApp) cloudflareHealthLabel(state cloudflareState) string {
+	d.mu.Lock()
+	health := d.lastCloudflareHealth
+	d.mu.Unlock()
+	if health != nil {
+		if health.OK {
+			return "健康状态：正常"
+		}
+		return "健康状态：异常"
+	}
+	if !state.Software.Installed {
+		return "健康状态：未安装 cloudflared"
+	}
+	if !cloudflareManaged(state) {
+		return "健康状态：Tunnel 未运行"
+	}
+	return "健康状态：未检查"
+}
+
 // refresh 把最新状态同步到托盘图标、提示文字和菜单。
 // force 用于首次装配；其余时候状态没变就不重建菜单，避免菜单在用户眼皮底下闪。
 func (d *desktopApp) refresh(state serviceState, force bool) {
+	cloudflare := currentCloudflareState()
 	d.mu.Lock()
-	changed := force || d.last != state
+	serviceChanged := d.last != state
+	cloudflareChanged := d.lastCloudflare != cloudflare
+	changed := force || serviceChanged || cloudflareChanged
+	if serviceChanged || cloudflareChanged {
+		d.lastCloudflareHealth = nil
+	}
 	d.last = state
+	d.lastCloudflare = cloudflare
 	d.mu.Unlock()
 	if !changed {
 		return
@@ -201,28 +248,83 @@ func (d *desktopApp) refresh(state serviceState, force bool) {
 		d.tray.SetIcon(iconStopped)
 		d.tray.SetTooltip("MCPX 已停止")
 	}
-	d.tray.SetMenu(d.buildMenu(state))
+	d.tray.SetMenu(d.buildMenu(state, cloudflare))
 }
 
-func (d *desktopApp) buildMenu(state serviceState) *application.Menu {
+func (d *desktopApp) buildMenu(state serviceState, cloudflare cloudflareState) *application.Menu {
 	menu := d.app.NewMenu()
 
 	status := menu.Add(statusLabel(state))
 	status.SetEnabled(false)
 	menu.AddSeparator()
 
-	start := menu.Add("启动服务")
-	start.OnClick(func(*application.Context) { d.runServiceAction(startService) })
-	// 端口冲突时启动必然 bind 失败，直接禁用而不是让用户点了没反应。
-	start.SetEnabled(state.Status == statusStopped)
+	manageCloudflareWithMCPX := false
+	if cfg, err := loadCloudflareDesktopConfig(); err == nil {
+		manageCloudflareWithMCPX = cfg.ManageWithMCPX
+	}
 
-	stop := menu.Add("停止服务")
-	stop.OnClick(func(*application.Context) { d.runServiceAction(stopService) })
-	stop.SetEnabled(managed(state))
+	start := menu.Add("启动 MCPX")
+	start.OnClick(func(*application.Context) { d.runServiceAction(startMCPXStack) })
+	if manageCloudflareWithMCPX {
+		// 联动模式下，本地 Runtime 或 Tunnel 任一未运行都允许补齐整套服务。
+		start.SetEnabled(state.Status != statusConflict &&
+			!(state.Status == statusRunning && cloudflareManaged(cloudflare)))
+	} else {
+		// 手动 Tunnel 模式下，MCPX 菜单只管理本地 Runtime。
+		start.SetEnabled(state.Status == statusStopped)
+	}
 
-	restart := menu.Add("重启服务")
-	restart.OnClick(func(*application.Context) { d.runServiceAction(restartService) })
-	restart.SetEnabled(managed(state))
+	stop := menu.Add("停止 MCPX")
+	stop.OnClick(func(*application.Context) { d.runServiceAction(stopMCPXStack) })
+	if manageCloudflareWithMCPX {
+		stop.SetEnabled(managed(state) || cloudflareManaged(cloudflare))
+	} else {
+		stop.SetEnabled(managed(state))
+	}
+
+	restart := menu.Add("重启 MCPX")
+	restart.OnClick(func(*application.Context) { d.runServiceAction(restartMCPXStack) })
+	if manageCloudflareWithMCPX {
+		restart.SetEnabled(managed(state) || cloudflareManaged(cloudflare))
+	} else {
+		restart.SetEnabled(managed(state))
+	}
+
+	menu.AddSeparator()
+	cloudflareMenu := menu.AddSubmenu("Cloudflare Tunnel")
+	cloudflareStatus := cloudflareMenu.Add(cloudflareStatusLabel(cloudflare))
+	cloudflareStatus.SetEnabled(false)
+
+	healthStatus := cloudflareMenu.Add(d.cloudflareHealthLabel(cloudflare))
+	healthStatus.SetEnabled(false)
+
+	if cloudflare.PublicMCPURL != "" {
+		publicURL := cloudflareMenu.Add("公网 MCP · " + cloudflare.PublicMCPURL)
+		publicURL.SetEnabled(false)
+	}
+
+	cloudflareMenu.AddSeparator()
+	startCloudflare := cloudflareMenu.Add("一键启动公网 MCP（MCPX + Tunnel）")
+	startCloudflare.OnClick(func(*application.Context) {
+		d.runCloudflareAction(func() error {
+			_, err := startCloudflareTunnel()
+			return err
+		})
+	})
+	startCloudflare.SetEnabled(cloudflare.Software.Installed && !cloudflareManaged(cloudflare))
+
+	stopCloudflare := cloudflareMenu.Add("停止 Cloudflare Tunnel")
+	stopCloudflare.OnClick(func(*application.Context) { d.runCloudflareAction(stopCloudflareTunnel) })
+	stopCloudflare.SetEnabled(cloudflareManaged(cloudflare))
+
+	healthCheck := cloudflareMenu.Add("运行健康检查")
+	healthCheck.OnClick(func(*application.Context) { d.refreshCloudflareHealth() })
+
+	copyPublicURL := cloudflareMenu.Add("复制公网 MCP URL")
+	copyPublicURL.OnClick(func(*application.Context) {
+		d.app.Clipboard.SetText(cloudflare.PublicMCPURL)
+	})
+	copyPublicURL.SetEnabled(cloudflare.PublicMCPURL != "")
 
 	menu.AddSeparator()
 	menu.Add("打开主窗口").OnClick(func(*application.Context) { d.showWindow() })
@@ -261,6 +363,10 @@ func managed(state serviceState) bool {
 	return state.Status == statusRunning || state.Status == statusStarting
 }
 
+func cloudflareManaged(state cloudflareState) bool {
+	return state.Status == cloudflareStatusRunning || state.Status == cloudflareStatusStarting
+}
+
 func statusLabel(state serviceState) string {
 	switch state.Status {
 	case statusRunning:
@@ -281,6 +387,32 @@ func (d *desktopApp) runServiceAction(action func() error) {
 		if err := action(); err != nil {
 			d.app.Dialog.Error().SetMessage(err.Error()).Show()
 		}
+		d.refresh(currentState(), true)
+	}()
+}
+
+// runCloudflareAction 与服务启停一致放到后台执行。Quick Tunnel 启动时可能要等
+// cloudflared 返回公网 URL，不能阻塞系统托盘的菜单线程。
+func (d *desktopApp) runCloudflareAction(action func() error) {
+	go func() {
+		if err := action(); err != nil {
+			d.app.Dialog.Error().SetMessage(err.Error()).Show()
+		}
+		d.mu.Lock()
+		d.lastCloudflareHealth = nil
+		d.mu.Unlock()
+		d.refresh(currentState(), true)
+	}()
+}
+
+// refreshCloudflareHealth 执行一次完整健康检查并把结果缓存在托盘菜单中。检查包含
+// 公网 HTTP/OAuth 请求，必须异步执行；Tunnel 或服务状态改变后缓存会被清空。
+func (d *desktopApp) refreshCloudflareHealth() {
+	go func() {
+		health := runCloudflareHealthCheck()
+		d.mu.Lock()
+		d.lastCloudflareHealth = &health
+		d.mu.Unlock()
 		d.refresh(currentState(), true)
 	}()
 }

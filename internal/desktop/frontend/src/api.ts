@@ -26,7 +26,61 @@ export interface ConnectionConfig {
   port: number
   auth_mode: string
   token: string
+  oauth_server_url: string
   effective_mode: string
+}
+
+export interface CloudflareConfig {
+  mode: 'quick' | 'named'
+  tunnel_token: string
+  tunnel_id: string
+  public_url: string
+  last_public_url: string
+  manage_with_mcpx: boolean
+  sync_oauth_server_url: boolean
+}
+
+export interface CloudflareSoftwareStatus {
+  installed: boolean
+  managed: boolean
+  path: string
+  version: string
+}
+
+export interface CloudflareState {
+  status: 'running' | 'starting' | 'stopped' | 'error'
+  pid: number
+  mode: 'quick' | 'named'
+  tunnel_id: string
+  public_url: string
+  public_mcp_url: string
+  local_mcp_url: string
+  oauth_server_url: string
+  oauth_linked: boolean
+  log_path: string
+  config_path: string
+  executable: string
+  software: CloudflareSoftwareStatus
+  error?: string
+}
+
+export interface CloudflareHealthItem {
+  ok: boolean
+  detail: string
+  url?: string
+  status_code?: number
+}
+
+export interface CloudflareHealth {
+  ok: boolean
+  checked_at: string
+  software: CloudflareHealthItem
+  local_mcp: CloudflareHealthItem
+  tunnel_process: CloudflareHealthItem
+  public_mcp: CloudflareHealthItem
+  oauth_metadata: CloudflareHealthItem
+  oauth_linked: boolean
+  diagnosis?: string
 }
 
 export interface LogChunk {
@@ -92,7 +146,38 @@ export const api = {
   generateToken: () =>
     request<{ token: string }>('/config/token', { method: 'POST' }),
 
-  open: (target: 'home' | 'log' | 'config') =>
+  cloudflareStatus: () => request<CloudflareState>('/cloudflare/status'),
+
+  getCloudflareConfig: () => request<CloudflareConfig>('/cloudflare/config'),
+
+  putCloudflareConfig: (config: CloudflareConfig) =>
+    request<CloudflareConfig>('/cloudflare/config', {
+      method: 'PUT',
+      body: JSON.stringify(config),
+    }),
+
+  installCloudflared: () =>
+    request<CloudflareSoftwareStatus>('/cloudflare/install', { method: 'POST' }),
+
+  uninstallCloudflared: () =>
+    request<CloudflareSoftwareStatus>('/cloudflare/uninstall', { method: 'POST' }),
+
+  startCloudflare: () =>
+    request<CloudflareState>('/cloudflare/start', { method: 'POST' }),
+
+  stopCloudflare: () =>
+    request<CloudflareState>('/cloudflare/stop', { method: 'POST' }),
+
+  cloudflareHealth: () =>
+    request<CloudflareHealth>('/cloudflare/health', { method: 'POST' }),
+
+  readCloudflareLogs: (offset: number) =>
+    request<LogChunk>(`/cloudflare/logs?offset=${offset}`),
+
+  clearCloudflareLogs: () =>
+    request<{ ok: boolean }>('/cloudflare/logs/clear', { method: 'POST' }),
+
+  open: (target: 'home' | 'log' | 'config' | 'cloudflare-log' | 'cloudflare-config') =>
     request<{ ok: boolean }>('/open', {
       method: 'POST',
       body: JSON.stringify({ target }),

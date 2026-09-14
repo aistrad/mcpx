@@ -737,13 +737,32 @@ Windows 上可以用托盘常驻管理服务：
 桌面上的 **MCPX**，不需要先打开 PowerShell，也不会留下长期驻留的控制台黑框；
 `mcpx.exe` 本身仍保持 Console subsystem，以保证 CLI 命令的 stdout/stderr 正常。
 
-托盘负责服务状态指示与启动 / 停止 / 重启，图形界面提供三块内容：
+托盘负责服务状态指示与启动 / 停止 / 重启，图形界面提供四块内容：
 
 | 页面 | 内容 |
 | --- | --- |
 | 服务 | 运行状态、PID、监听地址、鉴权模式；启停控制；复制端点地址；监听地址与 Bearer Token 等基础连接配置 |
+| Cloudflare | 检测 / 安装 `cloudflared`；Quick / Named Tunnel 配置；Tunnel Token / ID；启停；公网 MCP URL；OAuth `server_url` 联动；健康检查与独立日志 |
 | Workspace | 已注册 Workspace 的增删改，标注路径已失效的条目 |
 | 日志 | 实时跟随 `~/.mcpx/logs/mcpx-daemon.log`，支持关键字过滤与清空 |
+
+### Desktop 管理 Cloudflare Tunnel（非 Docker）
+
+在 **Cloudflare** 页可以直接管理本机 `cloudflared`，不需要 Docker：
+
+- 自动检测系统 PATH、常见 Windows 安装目录，以及 MCPX 自管的 `~/.mcpx/bin/cloudflared.exe`。
+- 「安装 cloudflared」会把 Cloudflare 官方 GitHub Release 下载到 MCPX 运行时目录；卸载只删除 MCPX 自管版本，不碰系统安装。
+- 默认情况下 Cloudflare Tunnel 与本地 MCPX 生命周期分开管理：**「服务」页**的启动 / 停止 / 重启只操作本地 Runtime，Cloudflare 页可单独启动 / 停止公网 Tunnel。显式开启「随 MCPX 启停 Cloudflare Tunnel」后，服务页才会把本地 Runtime 与 Tunnel 作为整套服务联动管理。
+- **Quick** 模式自动把本机 MCPX 端口暴露为临时 `https://*.trycloudflare.com/mcp`，并从日志解析公网地址。
+- **Named** 模式使用 Cloudflare Tunnel Token 启动远程管理 Tunnel；可额外记录 Tunnel ID 便于识别。公网 hostname 仍需先在 Cloudflare 中配置，并在界面填写对应的 HTTPS Origin（例如 `https://mcp.example.com`）。
+- Tunnel Token 保存在 `~/.mcpx/cloudflare-desktop.json`，启动 cloudflared 时通过 `TUNNEL_TOKEN` 环境变量传递，不放进进程命令行。
+- 公网启动前会拒绝 `auth.mode: open`，并自动打开 MCPX 反向代理所需的 Host / proxy header 设置。
+- 开启「公网 Origin 自动联动 OAuth server_url」后，Named Tunnel 会在启动前同步 `auth.oauth.server_url`；Quick Tunnel 会在取得临时公网地址后同步，并按需重启 MCPX 使 OAuth metadata 立即使用新 Origin。
+- 「健康检查」同时检查 cloudflared、MCPX 本地端点、Tunnel 进程、公网 `/mcp` 和 OAuth metadata；cloudflared 输出单独写入 `~/.mcpx/logs/cloudflared.log`。
+- 系统托盘的 **Cloudflare Tunnel** 子菜单会实时显示 Tunnel 状态和公网 MCP URL，并可直接启动 / 停止、运行健康检查、复制公网 MCP URL；健康检查结果会缓存显示为「正常 / 异常」，Tunnel 状态变化后自动失效。
+
+Quick Tunnel 适合临时开发和连通性验证；Cloudflare 官方说明 Quick Tunnel 不支持 SSE，因此需要稳定 URL、OAuth issuer
+或长期 Remote MCP 接入时应使用 Named Tunnel。
 
 界面右上角可在**跟随系统 / 浅色 / 深色**之间切换，选择记在本地，下次打开保持。
 选「跟随系统」时会实时响应 Windows 的应用主题变化。
