@@ -846,6 +846,7 @@ func aggregateState(steps []StepRecord) State {
 	anyRunning := false
 	anyWaiting := false
 	anyFailed := false
+	anyInterrupted := false
 	for _, step := range steps {
 		switch step.State {
 		case StateQueued:
@@ -858,12 +859,17 @@ func aggregateState(steps []StepRecord) State {
 			anyWaiting = true
 		case StateFailed:
 			anyFailed = true
-		case StateCancelled, StateInterrupted:
+		case StateCancelled:
 			anyFailed = true
+		case StateInterrupted:
+			anyInterrupted = true
 		case StateSucceeded, StateSkipped:
 		default:
 			allTerminal = false
 		}
+	}
+	if anyInterrupted && allTerminal {
+		return StateInterrupted
 	}
 	if anyFailed && !anyRunning && !anyWaiting && allTerminal {
 		return StateFailed

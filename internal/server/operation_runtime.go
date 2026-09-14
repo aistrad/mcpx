@@ -118,6 +118,11 @@ func (r *Runtime) waitForOperationTask(ctx context.Context, input operation.Exec
 		return nil, fmt.Errorf("task %s did not reach a terminal state", taskID)
 	}
 
+	// done 已就绪也可能表示 Job 核查失败。此事实必须优先于普通
+	// 执行错误以及上层 cancelRequested，不能依赖 select 的返回分支。
+	if task.StatusView()["status"] == terminal.TaskFailed {
+		return nil, operation.ErrEffectsUnconfirmed
+	}
 	data := r.taskResultData(task, 0, 0)
 	data["execution_task_id"] = task.ID
 	data["command"] = task.Command

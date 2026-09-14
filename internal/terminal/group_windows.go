@@ -18,6 +18,17 @@ type processGroup struct {
 }
 
 func startManagedProcess(cmd *exec.Cmd) (*processGroup, error) {
+	return startManagedProcessWithAPIs(cmd, managedProcessAPIs{windows.OpenProcess, windows.AssignProcessToJobObject, resumePrimaryThread})
+}
+
+type managedProcessAPIs struct {
+	open   func(uint32, bool, uint32) (windows.Handle, error)
+	assign func(windows.Handle, windows.Handle) error
+	resume func(uint32) error
+}
+
+// 注入边界仅为包内函数参数；正式入口始终使用上述 Windows API。
+func startManagedProcessWithAPIs(cmd *exec.Cmd, api managedProcessAPIs) (*processGroup, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
 		return nil, err
@@ -41,16 +52,16 @@ func startManagedProcess(cmd *exec.Cmd) (*processGroup, error) {
 		windows.CloseHandle(job)
 		return nil, cause
 	}
-	process, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	process, err := api.open(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
 	if err != nil {
 		return failed(err)
 	}
-	err = windows.AssignProcessToJobObject(job, process)
+	err = api.assign(job, process)
 	windows.CloseHandle(process)
 	if err != nil {
 		return failed(err)
 	}
-	if err = resumePrimaryThread(uint32(cmd.Process.Pid)); err != nil {
+	if err = api.resume(uint32(cmd.Process.Pid)); err != nil {
 		return failed(err)
 	}
 	return &processGroup{job: job}, nil

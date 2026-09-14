@@ -39,6 +39,12 @@ func TestReviewProcessTreeFixtureChild(t *testing.T) {
 		if role == "inherited" {
 			child.Stdout, child.Stderr = os.Stdout, os.Stderr
 		}
+		if role == "parent-exits" {
+			if err := child.Start(); err != nil {
+				os.Exit(6)
+			}
+			os.Exit(0)
+		}
 		if err := child.Run(); err != nil {
 			os.Exit(5)
 		}
@@ -47,7 +53,7 @@ func TestReviewProcessTreeFixtureChild(t *testing.T) {
 }
 
 func TestReviewCancelStopsGrandchildEffects(t *testing.T) {
-	for _, mode := range []string{"redirected", "inherited"} {
+	for _, mode := range []string{"redirected", "inherited", "parent-exits"} {
 		t.Run(mode, func(t *testing.T) {
 			rt := newWorkspaceRuntime(t, "tree")
 			s := operationTestSession(t, rt, "tree")
