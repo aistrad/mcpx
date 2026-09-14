@@ -1,10 +1,12 @@
 package main
 
 import (
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime/debug"
+	"strings"
 	"testing"
 	"time"
 
@@ -28,6 +30,67 @@ func TestResolveBuildProvenanceFallsBackToVCSRevision(t *testing.T) {
 	})
 	if got.Version != buildversion.Current || got.Commit != "0123456789abcdef-dirty" || got.Date != "unknown" {
 		t.Fatalf("unexpected VCS fallback provenance: %+v", got)
+	}
+}
+
+func TestIsUnknownPositionalArg(t *testing.T) {
+	unknown := []string{"skills", "foo", "start", "daemon"}
+	for _, arg := range unknown {
+		if !isUnknownPositionalArg(arg) {
+			t.Fatalf("%q must be rejected as an unknown positional argument", arg)
+		}
+	}
+	known := []string{"", "-addr", "--help", "-h", "-d", "-version", "observe", "workspace", "oauth-register", "update", "stop", "desktop", "help"}
+	for _, arg := range known {
+		if isUnknownPositionalArg(arg) {
+			t.Fatalf("%q must not be treated as an unknown positional argument", arg)
+		}
+	}
+}
+
+func TestUnknownCommandStatusPrintsUsageAndExitsTwo(t *testing.T) {
+	orig := os.Stderr
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = writer
+	code := unknownCommandStatus()
+	_ = writer.Close()
+	os.Stderr = orig
+	output, err := io.ReadAll(reader)
+	_ = reader.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code != 2 {
+		t.Fatalf("unknown command status=%d, want 2", code)
+	}
+	if !strings.Contains(string(output), "Usage:") {
+		t.Fatalf("unknown command must print usage, got %q", output)
+	}
+	if strings.Contains(string(output), "stopped previous background daemon") {
+		t.Fatalf("unknown command must not stop a daemon: %q", output)
+	}
+}
+
+func TestStopPreviousBackgroundWithoutPidfileIsNoop(t *testing.T) {
+	stopped, err := stopPreviousBackground(filepath.Join(t.TempDir(), daemonStateFilename))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stopped) != 0 {
+		t.Fatalf("missing pidfile must not stop processes: %v", stopped)
+	}
+}
+
+func TestStopPreviousBackgroundCorruptStateReturnsError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), daemonStateFilename)
+	if err := os.WriteFile(path, []byte("not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := stopPreviousBackground(path); err == nil {
+		t.Fatal("corrupt pidfile must fail closed without scanning processes")
 	}
 }
 
@@ -70,7 +133,7 @@ func TestStopPreviousBackgroundRemovesInvalidState(t *testing.T) {
 	if err := writeDaemonState(path, daemonState{}); err != nil {
 		t.Fatal(err)
 	}
-	stoppedPIDs, err := stopPreviousBackground(path, "/definitely/not/a/running/mcpx")
+	stoppedPIDs, err := stopPreviousBackground(path)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +192,7 @@ func TestStopPreviousBackgroundDiscardsReusedPID(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stoppedPIDs, err := stopPreviousBackground(path, unrelated)
+	stoppedPIDs, err := stopPreviousBackground(path)
 	if err != nil {
 		t.Fatalf("被复用的 pid 不能让启动失败: %v", err)
 	}

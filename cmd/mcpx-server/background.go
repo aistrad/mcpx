@@ -26,11 +26,7 @@ func stopExistingBackground() ([]int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("prepare mcpx home: %w", err)
 	}
-	executable, err := os.Executable()
-	if err != nil {
-		return nil, fmt.Errorf("resolve executable: %w", err)
-	}
-	return stopPreviousBackground(filepath.Join(layout.HomeDir, daemonStateFilename), executable)
+	return stopPreviousBackground(filepath.Join(layout.HomeDir, daemonStateFilename))
 }
 
 func startBackground(args []string) (int, string, []int, error) {
@@ -43,7 +39,7 @@ func startBackground(args []string) (int, string, []int, error) {
 		return 0, "", nil, fmt.Errorf("resolve executable: %w", err)
 	}
 	statePath := filepath.Join(layout.HomeDir, daemonStateFilename)
-	stoppedPIDs, err := stopPreviousBackground(statePath, executable)
+	stoppedPIDs, err := stopPreviousBackground(statePath)
 	if err != nil {
 		return 0, "", nil, fmt.Errorf("stop previous daemon: %w", err)
 	}
@@ -76,43 +72,26 @@ func startBackground(args []string) (int, string, []int, error) {
 	return pid, logPath, stoppedPIDs, nil
 }
 
-func stopPreviousBackground(statePath, executable string) ([]int, error) {
-	trackedPID := 0
-	stoppedPIDs := make([]int, 0, 2)
+func stopPreviousBackground(statePath string) ([]int, error) {
+	stoppedPIDs := make([]int, 0, 1)
 	state, err := readDaemonState(statePath)
-	if err == nil {
-		trackedPID = state.PID
-		if state.PID > 0 && state.Executable != "" {
-			stopped, err := terminateBackgroundProcess(state.PID, state.Executable, 3*time.Second)
-			if err != nil {
-				return nil, err
-			}
-			if stopped {
-				stoppedPIDs = append(stoppedPIDs, state.PID)
-			}
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
 		}
-		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-			return nil, fmt.Errorf("remove stale daemon state: %w", err)
-		}
-	} else if !os.IsNotExist(err) {
 		return nil, err
 	}
-
-	legacyPIDs, err := discoverBackgroundProcesses(executable)
-	if err != nil {
-		return nil, fmt.Errorf("discover previous daemon: %w", err)
-	}
-	for _, pid := range legacyPIDs {
-		if pid == trackedPID {
-			continue
-		}
-		stopped, err := terminateBackgroundProcess(pid, executable, 3*time.Second)
+	if state.PID > 0 && state.Executable != "" {
+		stopped, err := terminateBackgroundProcess(state.PID, state.Executable, 3*time.Second)
 		if err != nil {
 			return nil, err
 		}
 		if stopped {
-			stoppedPIDs = append(stoppedPIDs, pid)
+			stoppedPIDs = append(stoppedPIDs, state.PID)
 		}
+	}
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("remove stale daemon state: %w", err)
 	}
 	return stoppedPIDs, nil
 }

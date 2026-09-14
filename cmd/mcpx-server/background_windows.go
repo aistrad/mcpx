@@ -106,10 +106,6 @@ func waitWindowsProcessGone(pid int, executable string, deadline time.Time) (boo
 	}
 }
 
-func discoverBackgroundProcesses(executable string) ([]int, error) {
-	return nil, nil
-}
-
 // windowsBackgroundProcessState 走 Win32 API 查询，不解析 `tasklist` 的文本输出。
 //
 // 曾经的实现靠 `strings.HasPrefix(line, "INFO:")` 判断"进程不存在"，但那行提示

@@ -91,6 +91,10 @@ func main() {
 		case "help", "-h", "--help":
 			printUsage()
 			os.Exit(0)
+		default:
+			if isUnknownPositionalArg(os.Args[1]) {
+				os.Exit(unknownCommandStatus())
+			}
 		}
 	}
 
@@ -185,6 +189,23 @@ func runDesktop(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func isUnknownPositionalArg(arg string) bool {
+	if arg == "" || strings.HasPrefix(arg, "-") {
+		return false
+	}
+	switch arg {
+	case "observe", "workspace", "oauth-register", "update", "stop", "desktop", "help":
+		return false
+	default:
+		return true
+	}
+}
+
+func unknownCommandStatus() int {
+	printUsage()
+	return 2
 }
 
 func printUsage() {

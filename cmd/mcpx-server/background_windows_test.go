@@ -29,7 +29,7 @@ func TestStopPreviousBackgroundTreatsReusedPIDAsStale(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	stopped, err := stopPreviousBackground(statePath, "unused.exe")
+	stopped, err := stopPreviousBackground(statePath)
 	if err != nil {
 		t.Fatalf("stale reused PID should self-heal, got: %v", err)
 	}

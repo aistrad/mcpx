@@ -109,38 +109,6 @@ func backgroundProcessMatches(pid int, executable string) (bool, error) {
 	return backgroundCommandMatches(strings.TrimSpace(string(output)), executable), nil
 }
 
-func discoverBackgroundProcesses(executable string) ([]int, error) {
-	output, err := exec.Command("ps", "-axo", "pid=,sess=,command=").Output()
-	if err != nil {
-		return nil, err
-	}
-	return parseDetachedBackgroundProcesses(string(output), executable), nil
-}
-
-func parseDetachedBackgroundProcesses(output, executable string) []int {
-	pids := make([]int, 0, 1)
-	for _, line := range strings.Split(output, "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[0])
-		if err != nil || pid <= 0 || pid == os.Getpid() {
-			continue
-		}
-		sessionID, err := strconv.Atoi(fields[1])
-		if err != nil || sessionID != pid {
-			continue
-		}
-		commandStart := strings.Index(line, fields[2])
-		if commandStart < 0 || !backgroundCommandMatches(strings.TrimSpace(line[commandStart:]), executable) {
-			continue
-		}
-		pids = append(pids, pid)
-	}
-	return pids
-}
-
 func backgroundCommandMatches(command, executable string) bool {
 	executable = filepath.Clean(strings.TrimSpace(executable))
 	command = strings.TrimSpace(command)
