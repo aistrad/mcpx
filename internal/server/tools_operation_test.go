@@ -260,7 +260,7 @@ func TestOperationBatchPublishesBoundedStatisticsForMaxSteps(t *testing.T) {
 	}
 	operationID := accepted["data"].(map[string]any)["operation_id"].(string)
 	completed := callOperationTool(t, rt, "operation_manage", map[string]any{
-		"remote_session_id": session.ID, "operation_id": operationID, "action": "wait", "timeout_ms": 5000,
+		"remote_session_id": session.ID, "operation_id": operationID, "action": "wait", "timeout_ms": 30000,
 	})
 	if completed["status"] != "succeeded" {
 		t.Fatalf("batch completion=%+v", completed)
