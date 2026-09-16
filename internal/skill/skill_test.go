@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -150,6 +151,33 @@ func TestLoadAgentsSkillsDir(t *testing.T) {
 		t.Fatal("expected to discover SKILL.md packages under ~/.agents/skills")
 	}
 	t.Logf("found %d skills, first=%s", len(skills), skills[0].Manifest.Name)
+}
+
+func TestConfiguredSkillRootsIntegration(t *testing.T) {
+	raw := os.Getenv("MCPX_INTEGRATION_SKILL_ROOTS")
+	wantRaw := os.Getenv("MCPX_INTEGRATION_SKILL_COUNT")
+	if raw == "" || wantRaw == "" {
+		t.Skip("set MCPX_INTEGRATION_SKILL_ROOTS and MCPX_INTEGRATION_SKILL_COUNT")
+	}
+	want, err := strconv.Atoi(wantRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := LoadAll(filepath.SplitList(raw), "")
+	if len(loaded) != want {
+		names := make([]string, 0, len(loaded))
+		for _, item := range loaded {
+			names = append(names, item.Manifest.Name)
+		}
+		t.Fatalf("configured roots discovered %d Skills, want %d: %v", len(loaded), want, names)
+	}
+	names := map[string]bool{}
+	for _, item := range loaded {
+		if names[item.Manifest.Name] {
+			t.Fatalf("duplicate Skill name %q", item.Manifest.Name)
+		}
+		names[item.Manifest.Name] = true
+	}
 }
 
 func TestLoadAllRejectsEntryTraversal(t *testing.T) {
