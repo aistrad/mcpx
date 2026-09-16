@@ -14,21 +14,23 @@ import (
 
 // Manifest describes a skill package (skill.yaml or SKILL.md frontmatter).
 type Manifest struct {
-	Name            string         `yaml:"name"`
-	Description     string         `yaml:"description"`
-	Runtime         string         `yaml:"runtime"`
-	Entry           string         `yaml:"entry"`
-	Permissions     []string       `yaml:"permissions"`
-	ArgumentsSchema map[string]any `yaml:"arguments_schema"`
+	Name            string          `yaml:"name"`
+	Description     string          `yaml:"description"`
+	Runtime         string          `yaml:"runtime"`
+	Entry           string          `yaml:"entry"`
+	Permissions     []string        `yaml:"permissions"`
+	ArgumentsSchema map[string]any  `yaml:"arguments_schema"`
+	MCPX            *NativeManifest `yaml:"mcpx,omitempty"`
 	// Format: yaml | skill_md
 	Format string `yaml:"-"`
 }
 
 // Skill is a discovered skill package.
 type Skill struct {
-	Manifest Manifest
-	Dir      string
-	Source   string // scan root that contained it
+	Manifest       Manifest
+	Dir            string
+	Source         string // scan root that contained it
+	NativeApproved bool   // set only by the process-wide administrator allowlist
 }
 
 // LoadAll scans dirs for skill packages.

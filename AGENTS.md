@@ -64,7 +64,7 @@ CGO_ENABLED=0 go build -o bin/mcpx-server ./cmd/mcpx-server
 
 ## 提交与 PR
 
-- 历史风格：Conventional Commits，**subject 中文动词开头**，例如：
+- 使用 Conventional Commits；subject 语言不限，以清楚描述变更为准，例如：
   - `feat(cli): 增加 oauth-register 子命令`
   - `fix(oauth): 持久化 DCR 客户端`
   - `docs(readme): 补充接入说明`

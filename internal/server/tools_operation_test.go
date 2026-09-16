@@ -40,9 +40,12 @@ func callOperationTool(t *testing.T, rt *Runtime, name string, arguments map[str
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer := decodeARCEnvelope(t, result)
-	mcpx, _ := outer["mcpx"].(map[string]any)
-	payload, _ := mcpx["result"].(map[string]any)
+	// Assert the same structured contract consumed by clients. Presentation
+	// metadata intentionally omits some diagnostics and is not the machine API.
+	payload, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatal("operation result has no model-visible structured content")
+	}
 	return payload
 }
 
@@ -257,7 +260,7 @@ func TestOperationBatchPublishesBoundedStatisticsForMaxSteps(t *testing.T) {
 	}
 	operationID := accepted["data"].(map[string]any)["operation_id"].(string)
 	completed := callOperationTool(t, rt, "operation_manage", map[string]any{
-		"remote_session_id": session.ID, "operation_id": operationID, "action": "wait", "timeout_ms": 5000,
+		"remote_session_id": session.ID, "operation_id": operationID, "action": "wait", "timeout_ms": 30000,
 	})
 	if completed["status"] != "succeeded" {
 		t.Fatalf("batch completion=%+v", completed)

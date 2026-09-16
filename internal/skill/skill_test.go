@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 )
 
@@ -135,20 +136,48 @@ func TestLoadAllSymlinkedSkillRejectsEntrySymlinkEscape(t *testing.T) {
 }
 
 func TestLoadAgentsSkillsDir(t *testing.T) {
-	// Integration-ish: if user has ~/.agents/skills, ensure we find at least one.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip(err)
+	// Test home expansion without depending on the developer's installed packages.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agents := filepath.Join(home, ".agents", "skills", "fixture")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	agents := filepath.Join(home, ".agents", "skills")
-	if _, err := os.Stat(agents); err != nil {
-		t.Skip("no ~/.agents/skills")
+	if err := os.WriteFile(filepath.Join(agents, "SKILL.md"), []byte("---\nname: fixture\ndescription: Hermetic discovery fixture.\n---\nRead instructions.\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	skills := LoadAll([]string{"~/.agents/skills"}, "")
 	if len(skills) == 0 {
 		t.Fatal("expected to discover SKILL.md packages under ~/.agents/skills")
 	}
 	t.Logf("found %d skills, first=%s", len(skills), skills[0].Manifest.Name)
+}
+
+func TestConfiguredSkillRootsIntegration(t *testing.T) {
+	raw := os.Getenv("MCPX_INTEGRATION_SKILL_ROOTS")
+	wantRaw := os.Getenv("MCPX_INTEGRATION_SKILL_COUNT")
+	if raw == "" || wantRaw == "" {
+		t.Skip("set MCPX_INTEGRATION_SKILL_ROOTS and MCPX_INTEGRATION_SKILL_COUNT")
+	}
+	want, err := strconv.Atoi(wantRaw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded := LoadAll(filepath.SplitList(raw), "")
+	if len(loaded) != want {
+		names := make([]string, 0, len(loaded))
+		for _, item := range loaded {
+			names = append(names, item.Manifest.Name)
+		}
+		t.Fatalf("configured roots discovered %d Skills, want %d: %v", len(loaded), want, names)
+	}
+	names := map[string]bool{}
+	for _, item := range loaded {
+		if names[item.Manifest.Name] {
+			t.Fatalf("duplicate Skill name %q", item.Manifest.Name)
+		}
+		names[item.Manifest.Name] = true
+	}
 }
 
 func TestLoadAllRejectsEntryTraversal(t *testing.T) {
