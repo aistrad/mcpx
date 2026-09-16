@@ -148,6 +148,10 @@ type SkillsDiscovery struct {
 	EnabledSet bool     `yaml:"-"`
 	Dirs       []string `yaml:"dirs"`
 	ExtraDirs  []string `yaml:"extra_dirs"`
+	// NativeDirs and NativeEnv are administrator-controlled, process-wide grants.
+	// Merely discovering a SKILL.md never grants execution of its native entry.
+	NativeDirs []string `yaml:"native_dirs,omitempty"`
+	NativeEnv  []string `yaml:"native_env,omitempty"`
 }
 
 // InstructionsDiscovery controls the process-wide instruction document that

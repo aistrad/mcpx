@@ -40,9 +40,12 @@ func callOperationTool(t *testing.T, rt *Runtime, name string, arguments map[str
 	if err != nil {
 		t.Fatal(err)
 	}
-	outer := decodeARCEnvelope(t, result)
-	mcpx, _ := outer["mcpx"].(map[string]any)
-	payload, _ := mcpx["result"].(map[string]any)
+	// Assert the same structured contract consumed by clients. Presentation
+	// metadata intentionally omits some diagnostics and is not the machine API.
+	payload, ok := result.StructuredContent.(map[string]any)
+	if !ok {
+		t.Fatal("operation result has no model-visible structured content")
+	}
 	return payload
 }
 

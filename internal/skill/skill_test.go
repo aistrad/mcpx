@@ -135,14 +135,15 @@ func TestLoadAllSymlinkedSkillRejectsEntrySymlinkEscape(t *testing.T) {
 }
 
 func TestLoadAgentsSkillsDir(t *testing.T) {
-	// Integration-ish: if user has ~/.agents/skills, ensure we find at least one.
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skip(err)
+	// Test home expansion without depending on the developer's installed packages.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	agents := filepath.Join(home, ".agents", "skills", "fixture")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	agents := filepath.Join(home, ".agents", "skills")
-	if _, err := os.Stat(agents); err != nil {
-		t.Skip("no ~/.agents/skills")
+	if err := os.WriteFile(filepath.Join(agents, "SKILL.md"), []byte("---\nname: fixture\ndescription: Hermetic discovery fixture.\n---\nRead instructions.\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
 	skills := LoadAll([]string{"~/.agents/skills"}, "")
 	if len(skills) == 0 {

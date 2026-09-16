@@ -51,7 +51,7 @@ func (r *Runtime) skillToolList(ctx context.Context, req *mcp.CallToolRequest) (
 	if !effective.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
-	items := skill.LoadAll(effective.Discovery.Skills.Dirs, session.WorkspacePath)
+	items := skill.LoadConfigured(effective.Discovery.Skills.Dirs, effective.Discovery.Skills.NativeDirs, session.WorkspacePath)
 	items = filterSkillsByQuery(items, strings.TrimSpace(stringPayload(envReq.Payload, "query")))
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, map[string]any{"skills": compactSkillInventory(items)})
 }
@@ -66,12 +66,19 @@ func (r *Runtime) skillToolDescribe(ctx context.Context, req *mcp.CallToolReques
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
 	name := strings.TrimSpace(stringPayload(envReq.Payload, "name"))
-	items := skill.LoadAll(effective.Discovery.Skills.Dirs, session.WorkspacePath)
+	items := skill.LoadConfigured(effective.Discovery.Skills.Dirs, effective.Discovery.Skills.NativeDirs, session.WorkspacePath)
 	sk, ok := skill.Find(items, name)
 	if !ok {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_NOT_FOUND", fmt.Sprintf("skill %q was not found", name))
 	}
 	descriptor := skillItems([]skill.Skill{sk})[0]
+	if sk.NativeApproved {
+		var err error
+		descriptor, err = nativeSkillDescriptor(ctx, sk, nativeRuntimeContext(envReq, session), effective.Discovery.Skills.NativeEnv)
+		if err != nil {
+			return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_NATIVE_ERROR", err.Error())
+		}
+	}
 	revision, _ := descriptor["revision"].(string)
 	r.upsertDiscoveryLease(discoveryLease{
 		Revision: revision, RemoteSessionID: session.ID, PrincipalID: principal.ID,
@@ -86,7 +93,11 @@ func (r *Runtime) skillToolDescribe(ctx context.Context, req *mcp.CallToolReques
 		"permissions":      sk.Manifest.Permissions,
 		"risk":             risk.publicData(),
 	}
-	if instructions, err := skillInstructions(sk); err == nil && instructions != "" {
+	if sk.NativeApproved {
+		result["instructions"] = descriptor["instructions"]
+		result["entrypoints"] = descriptor["entrypoints"]
+		result["external_steps"] = true
+	} else if instructions, err := skillInstructions(sk); err == nil && instructions != "" {
 		result["instructions"] = instructions
 	}
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, result)
@@ -117,10 +128,12 @@ func skillInstructions(sk skill.Skill) (string, error) {
 func compactSkillInventory(skills []skill.Skill) []map[string]any {
 	items := make([]map[string]any, 0, len(skills))
 	for _, sk := range skills {
-		items = append(items, map[string]any{
-			"name":        sk.Manifest.Name,
-			"description": sk.Manifest.Description,
-		})
+		item := map[string]any{"name": sk.Manifest.Name, "description": sk.Manifest.Description}
+		if sk.NativeApproved {
+			item["execution_mode"] = "native"
+			item["external_steps"] = true
+		}
+		items = append(items, item)
 	}
 	return items
 }
@@ -131,6 +144,10 @@ func compactSkillMaps(skills []map[string]any) []map[string]any {
 		item := map[string]any{"name": sk["name"]}
 		if description := sk["description"]; description != nil {
 			item["description"] = description
+		}
+		if sk["kind"] == "native" {
+			item["execution_mode"] = "native"
+			item["external_steps"] = true
 		}
 		items = append(items, item)
 	}
@@ -147,11 +164,18 @@ func (r *Runtime) preflightSkillToolCall(ctx context.Context, req *mcp.CallToolR
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
 	name := strings.TrimSpace(stringPayload(envReq.Payload, "name"))
-	sk, ok := skill.Find(skill.LoadAll(effective.Discovery.Skills.Dirs, remote.WorkspacePath), name)
+	sk, ok := skill.Find(skill.LoadConfigured(effective.Discovery.Skills.Dirs, effective.Discovery.Skills.NativeDirs, remote.WorkspacePath), name)
 	if !ok {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_NOT_FOUND", fmt.Sprintf("skill %q was not found", name))
 	}
 	current := skillItems([]skill.Skill{sk})[0]
+	if sk.NativeApproved {
+		var err error
+		current, err = nativeSkillDescriptor(ctx, sk, nativeRuntimeContext(envReq, remote), effective.Discovery.Skills.NativeEnv)
+		if err != nil {
+			return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_NATIVE_ERROR", err.Error())
+		}
+	}
 	currentRevision, _ := current["revision"].(string)
 	if observed, ok := r.latestDiscoveryLease(remote, principal.ID, "skill", name); ok && observed.Revision != currentRevision {
 		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, nil, "SKILL_REVISION_CHANGED", "Skill changed after it was described")
@@ -167,9 +191,16 @@ func (r *Runtime) preflightSkillToolCall(ctx context.Context, req *mcp.CallToolR
 	if raw, exists := envReq.Payload["arguments"]; exists && raw != nil && !argumentsOK {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_ARGUMENT_INVALID", "arguments must be an object")
 	}
-	if err := validateDiscoveryArguments(sk.Manifest.ArgumentsSchema, arguments); err != nil {
-		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_ARGUMENT_INVALID", err.Error())
+	var argumentError error
+	if sk.NativeApproved {
+		argumentError = validateNativeArguments(discoverySchemaMap(current["arguments_schema"]), arguments)
+	} else {
+		argumentError = validateDiscoveryArguments(sk.Manifest.ArgumentsSchema, arguments)
 	}
+	if argumentError != nil {
+		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_ARGUMENT_INVALID", argumentError.Error())
+	}
+	r.upsertDiscoveryLease(discoveryLease{Revision: currentRevision, RemoteSessionID: remote.ID, PrincipalID: principal.ID, WorkspacePath: remote.WorkspacePath, Kind: "skill", Object: name})
 	return nil, nil
 }
 
@@ -345,6 +376,9 @@ func (risk extensionRisk) publicData() map[string]any {
 }
 
 func skillExecutionRisk(sk skill.Skill) extensionRisk {
+	if sk.NativeApproved {
+		return extensionRisk{ReadOnly: false, Idempotent: true, Classification: "skill_native_owner_operation", Permissions: append([]string(nil), sk.Manifest.Permissions...)}
+	}
 	if sk.Manifest.Runtime == "markdown" || sk.Manifest.Format == "skill_md" {
 		return extensionRisk{ReadOnly: true, Idempotent: true, Classification: "skill_instruction_read", Permissions: append([]string(nil), sk.Manifest.Permissions...)}
 	}

@@ -241,6 +241,16 @@ func merge(global, project Config, mergeAuth bool) Config {
 	if len(project.Discovery.Skills.ExtraDirs) > 0 {
 		out.Discovery.Skills.Dirs = append(out.Discovery.Skills.Dirs, project.Discovery.Skills.ExtraDirs...)
 	}
+	// Native executable trust and environment forwarding cannot be granted by
+	// files in the workspace that the model is editing.
+	if mergeAuth {
+		if project.Discovery.Skills.NativeDirs != nil {
+			out.Discovery.Skills.NativeDirs = append([]string{}, project.Discovery.Skills.NativeDirs...)
+		}
+		if project.Discovery.Skills.NativeEnv != nil {
+			out.Discovery.Skills.NativeEnv = append([]string{}, project.Discovery.Skills.NativeEnv...)
+		}
+	}
 
 	if project.Logging.Dir != "" {
 		out.Logging.Dir = project.Logging.Dir
