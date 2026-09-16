@@ -46,20 +46,31 @@ func ExecDirect(ctx context.Context, opts DirectOptions) (Result, error) {
 	}
 	ctx, cancel := context.WithTimeout(ctx, opts.Timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, opts.Executable, opts.Args...)
-	configureProcess(cmd)
+	cmd := exec.Command(opts.Executable, opts.Args...)
 	cmd.Dir, cmd.Env = opts.WorkDir, opts.Env
 	cmd.Stdin = bytes.NewReader(opts.Stdin)
-	cmd.Cancel = func() error { killProcessTree(cmd); return nil }
-	cmd.WaitDelay = 2 * time.Second
 	stdout := &boundedWriter{limit: opts.MaxOutputBytes, cancel: cancel}
 	stderr := &boundedWriter{limit: opts.MaxOutputBytes, cancel: cancel}
 	cmd.Stdout, cmd.Stderr = stdout, stderr
 	started := time.Now()
-	err := cmd.Run()
+	group, err := startManagedProcess(cmd)
+	if err != nil {
+		return Result{ExitCode: -1, DurationMs: time.Since(started).Milliseconds()}, err
+	}
+	waiting := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = group.kill()
+		case <-waiting:
+		}
+	}()
+	err = cmd.Wait()
+	close(waiting)
 	// A finite native operation must not leave an orphan doing work after its
 	// structured response. This also closes the parent-exits cancellation gap.
-	killProcessTree(cmd)
+	_ = group.kill()
+	groupErr := group.wait()
 	result := Result{Stdout: stdout.buffer.String(), Stderr: stderr.buffer.String(), DurationMs: time.Since(started).Milliseconds()}
 	if stdout.overflow || stderr.overflow {
 		result.ExitCode = -1
@@ -68,6 +79,10 @@ func ExecDirect(ctx context.Context, opts DirectOptions) (Result, error) {
 	if ctx.Err() != nil {
 		result.ExitCode = -1
 		return result, ctx.Err()
+	}
+	if groupErr != nil {
+		result.ExitCode = -1
+		return result, groupErr
 	}
 	if err != nil {
 		var exit *exec.ExitError
