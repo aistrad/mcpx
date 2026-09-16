@@ -27,43 +27,6 @@ Edit ID、Task ID 和能力版本避免重复读取和无效重试；Skill/MCP �
 | Security | OAuth、Bearer、Remote Session ACL、命令/文件策略和语义确认 |
 | Observation | 通过本机 Socket 观察工具调用、Task、Edit 和操作事件 |
 
-## 原生 Skill 的外部模型交接
-
-公开工具仍为 19 个。`skill_tool` 保留 `list / describe / call`；原业务 Skill
-可在其原有 `SKILL.md` 中声明固定 native entry，由原 owner 定义 prepare/submit
-参数、步骤、Prompt、Context、验证和组装。MCPX 不复制业务流程，也不生成研究结果。
-没有完成适配的说明型 Skill 保持原行为，不能因为被发现就自动执行代码。
-
-```yaml
-# 原 Skill 的 frontmatter（不是另一份工作流定义）
-mcpx:
-  protocol: json_stdio_v1
-  entry: scripts/native_entry.sh
-  timeout_seconds: 300
-```
-
-执行还必须由管理员在全局 `discovery.skills.native_dirs` 批准该 Skill 的精确目录；
-工作区配置不能授予这项权限。`native_env` 只允许显式声明的环境变量进入子进程，
-不会默认转发 Runtime 的所有秘密。入口必须为目录内的普通文件，不允许绝对路径、
-`..` 或符号链接。通过固定 `/bin/bash <entry>` 启动，参数用 JSON stdin 传递，
-不经 shell 字符串插值；输入、输出、超时、取消和后代进程都有边界。
-首版 `json_stdio_v1` 仅在有 `/bin/bash` 的 POSIX 主机启用；Windows 不宣称支持
-该 native 入口，既有说明型 Skill 和其他 Runtime 工具不受影响。
-
-原生进程收到 `mcpx_native_skill.v1` 信封，包含 Runtime 生成的 `runtime_context`
-和 `operation=describe|call|observe`。describe 返回稳定的 `arguments_schema`、
-`contract_revision` 和原业务入口；call 接收该 Schema 约束的业务参数；observe
-仅接收 `run_id`。stdout 必须是一个 JSON 对象，日志使用 stderr。失败返回
-`status=error` 与 `error.code/message/retryable`，不可把 traceback 或凭据作为错误
-响应。提交可能保存运行制品，不能标为只读或伪装成业务复核/发布。
-
-`observe(view="skill", name, run_id)` 只投影原 owner 的运行状态，不创建另一份
-任务表、不推进步骤；原 session/task/plan/history/logs 视图保持不变。入口源码和
-动态合同参与现有 revision 检查，模型只原样复用返回的引用，不维护内部租约。
-固定 native 调用结束后不会留下后台研究进程。可选跨进程测试通过
-`MCPX_NATIVE_INTEGRATION_SKILL_DIR` 指向待验收的原 Skill，不需要在仓库中写入
-具体组织的路径或凭据。
-
 ## 架构
 
 ```mermaid

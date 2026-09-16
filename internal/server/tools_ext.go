@@ -434,9 +434,6 @@ func skillItems(skills []skill.Skill) []map[string]any {
 		if s.Manifest.Runtime == "markdown" || s.Manifest.Format == "skill_md" {
 			kind = "instruction"
 		}
-		if s.NativeApproved {
-			kind = "native"
-		}
 		argumentsSchema := s.Manifest.ArgumentsSchema
 		if len(argumentsSchema) == 0 {
 			argumentsSchema = map[string]any{"type": "object", "additionalProperties": true}
@@ -478,15 +475,6 @@ func skillDefinitionRevision(sk skill.Skill) string {
 	} else {
 		payload = append(payload, []byte(err.Error())...)
 	}
-	if sk.NativeApproved {
-		payload = append(payload, []byte("\x00native-approved\x00")...)
-		if nativePath, nativeErr := skill.ResolveNativeEntry(sk); nativeErr == nil {
-			payload = append(payload, []byte(nativePath)...)
-			if nativeBody, readErr := os.ReadFile(nativePath); readErr == nil {
-				payload = append(payload, nativeBody...)
-			}
-		}
-	}
 	return skillRevision(string(payload))
 }
 
@@ -514,18 +502,10 @@ func (r *Runtime) toolSkillExecute(ctx context.Context, req *mcp.CallToolRequest
 	if !eff.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "disabled", "skill discovery is disabled")
 	}
-	skills := skill.LoadConfigured(eff.Discovery.Skills.Dirs, eff.Discovery.Skills.NativeDirs, remote.WorkspacePath)
+	skills := skill.LoadAll(eff.Discovery.Skills.Dirs, remote.WorkspacePath)
 	sk, ok := skill.Find(skills, name)
 	if !ok {
 		return r.skillNotFound(envReq, remote.ID, remote.WorkspaceName, name)
-	}
-	if sk.NativeApproved {
-		arguments, _ := args.(map[string]any)
-		out, err := skill.ExecuteNative(ctx, sk, "call", arguments, nativeRuntimeContext(envReq, remote), eff.Discovery.Skills.NativeEnv)
-		if err != nil {
-			return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_NATIVE_ERROR", err.Error())
-		}
-		return r.nativeSkillResponse(envReq, remote, name, out, "skill_tool")
 	}
 	out, err := skill.Execute(ctx, sk, remote.WorkspacePath, args)
 	if err != nil {

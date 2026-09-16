@@ -19,15 +19,7 @@ func (r *Runtime) toolObserve(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if planTaskID != "" && executionTaskID != "" && view != "history" {
 		return r.observeTaskIDError(ctx, req, "OBSERVE_TASK_ID_CONFLICT", "plan_task_id and execution_task_id cannot both select a single observe target")
 	}
-	if hasObserveArgument(args, "run_id", "name") && view != "skill" {
-		return r.observeTaskIDError(ctx, req, "OBSERVE_TARGET_CONFLICT", "name and run_id select only view=skill")
-	}
-	if view == "skill" && hasObserveArgument(args, "plan_task_id", "execution_task_id", "call_id", "event_ids", "request_ids", "operation_ids", "plan_task_ids", "execution_task_ids", "keyword", "kinds", "statuses", "created_after", "created_before", "stdout_offset", "stderr_offset", "cursor", "limit") {
-		return r.observeTaskIDError(ctx, req, "OBSERVE_TARGET_CONFLICT", "view=skill accepts only its native name and run_id target")
-	}
 	switch view {
-	case "skill":
-		return r.toolObserveSkill(ctx, req)
 	case "session":
 		return r.toolObserveStatus(ctx, req)
 	case "task":
@@ -53,7 +45,7 @@ func (r *Runtime) toolObserve(ctx context.Context, req *mcp.CallToolRequest) (*m
 			if fail != nil {
 				return fail, nil
 			}
-			return r.terminalError(envReq, envReq.RemoteSessionID, envReq.Workspace, "ambiguous_request", "observe view cannot be inferred uniquely; choose session, task, plan, history, logs, or skill")
+			return r.terminalError(envReq, envReq.RemoteSessionID, envReq.Workspace, "ambiguous_request", "observe view cannot be inferred uniquely; choose session, task, plan, history, or logs")
 		}
 		return r.invalidAction(ctx, req, "observe", view)
 	}
@@ -65,9 +57,6 @@ func canonicalObserveRequest(req *mcp.CallToolRequest) (*mcp.CallToolRequest, st
 	}
 	args := mcpresult.Arguments(req)
 	candidates := map[string]bool{}
-	if hasObserveArgument(args, "name", "run_id") {
-		candidates["skill"] = true
-	}
 	if stringPayload(args, "execution_task_id") != "" {
 		candidates["task"] = true
 	}
