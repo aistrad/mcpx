@@ -266,9 +266,7 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 	r.addTool(s, cleanCoreTool("observe", desc["observe"], map[string]any{
 		"remote_session_id":  remoteSession,
 		"workspace":          workspace,
-		"view":               enumSchema("观察视图；目标唯一时推导；skill只读取原业务run，不推进流程", "session", "task", "plan", "history", "logs", "skill"),
-		"name":               stringSchema("view=skill的已批准原生Skill名称"),
-		"run_id":             stringSchema("view=skill的原业务运行ID；原样使用Skill返回值"),
+		"view":               enumSchema("观察视图；省略时 Runtime 仅在目标唯一时推导，完全无目标参数时默认为 session", "session", "task", "plan", "history", "logs"),
 		"limit":              numberSchema("返回数量限制"),
 		"cursor":             stringSchema("分页游标"),
 		"call_id":            stringSchema("按调用关联 ID 过滤 history"),

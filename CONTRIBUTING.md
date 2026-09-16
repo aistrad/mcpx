@@ -53,7 +53,7 @@ go build -o bin/mcpx.exe ./cmd/mcpx-server
 
 ## 提交与 Pull Request
 
-提交信息使用 Conventional Commits，subject 使用中文动词描述：
+提交信息使用 Conventional Commits；subject 语言不限，以清楚描述变更为准：
 
 ```text
 feat(模块): 添加功能

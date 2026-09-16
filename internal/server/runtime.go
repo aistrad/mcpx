@@ -901,7 +901,7 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 	}
 	loadedSkills := []skill.Skill{}
 	if effective.Discovery.Skills.Enabled {
-		loadedSkills = skill.LoadConfigured(effective.Discovery.Skills.Dirs, effective.Discovery.Skills.NativeDirs, wsPath)
+		loadedSkills = skill.LoadAll(effective.Discovery.Skills.Dirs, wsPath)
 	}
 	fullSkills := skillItems(loadedSkills)
 	skills := skillSummaryItems(loadedSkills)
