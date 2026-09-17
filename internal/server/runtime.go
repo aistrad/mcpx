@@ -78,8 +78,6 @@ type Runtime struct {
 	operations      *operation.Service
 	observerSocket  *observation.SocketServer
 	activityMu      sync.Mutex
-	writerLeaseMu   sync.Mutex
-	writerLeases    map[string]writerLease
 	closeOnce       sync.Once
 	closeErr        error
 
@@ -222,7 +220,6 @@ func New(opts Options) (*Runtime, error) {
 		idempotency:    idempotency.NewStore(stateStore.DB()),
 		discoveries:    map[string]discoveryLease{},
 		projectConfigs: map[string]projectConfigCacheEntry{},
-		writerLeases:   map[string]writerLease{},
 		build: BuildInfo{
 			Version: firstNonEmpty(opts.Version, buildversion.Current),
 			Commit:  firstNonEmpty(opts.Commit, "none"),
@@ -447,7 +444,6 @@ func (r *Runtime) Close() error {
 			r.tasks.Close()
 		}
 		if r.state != nil {
-			r.releaseAllWriterLeases(context.Background())
 			if err := r.state.Close(); r.closeErr == nil {
 				r.closeErr = err
 			}
@@ -889,6 +885,7 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 	if err != nil {
 		return r.remoteError(envReq, remoteID, ws.Name, err)
 	}
+	wsPath := ws.Path
 	var session *remotesession.Session
 	if remoteID != "" {
 		resolved, sessionErr := r.remote.Get(ctx, principal, remoteID)
@@ -896,14 +893,6 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 			return r.remoteError(envReq, remoteID, ws.Name, sessionErr)
 		}
 		session = &resolved
-	}
-	registeredPath := ws.Path
-	wsPath := ws.Path
-	if session != nil {
-		wsPath = sessionProjectPath(*session)
-		if registered, ok := r.reg.Get(ws.Name); ok {
-			registeredPath = registered.Path
-		}
 	}
 	effective := r.effectiveConfig(wsPath)
 	servers := []map[string]any{}
@@ -922,15 +911,6 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 	guidance := agentGuidance()
 	clientProtocol := clientProtocolCapabilities()
 	toolSchemaRevision := r.currentToolSchemaRevision()
-	workspaceData := map[string]any{
-		"name":                  ws.Name,
-		"registered_root":       registeredPath,
-		"project_root":          wsPath,
-		"project_root_required": ws.ProjectRootRequired || gitTop(ctx, registeredPath) != "",
-	}
-	if session != nil {
-		workspaceData["project_root"] = sessionProjectPath(*session)
-	}
 	data := map[string]any{
 		"capability_version": cleanCoreCapabilityVersion,
 		"capability_groups":  capabilityGroups(),
@@ -938,7 +918,7 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 		"schema_source":      "tools/list",
 		"agent_guidance":     guidance,
 		"client_protocol":    clientProtocol,
-		"workspace":          workspaceData,
+		"workspace":          map[string]any{"name": ws.Name},
 		"tools":              tools,
 		"runtime": map[string]any{
 			"version":                  r.build.Version,
@@ -978,7 +958,7 @@ func (r *Runtime) toolCapabilityList(ctx context.Context, req *mcp.CallToolReque
 		"client_protocol_revision":     clientProtocolRevision(),
 	}
 	if session != nil {
-		data["remote_session"] = map[string]any{"id": session.ID, "role": session.Role, "status": session.Status, "project_root": sessionProjectPath(*session), "project_bound": session.ProjectBound}
+		data["remote_session"] = map[string]any{"id": session.ID, "role": session.Role, "status": session.Status}
 	}
 	data["revision"] = capabilityRevision(data)
 	r.logAudit(audit.Event{RequestID: envReq.RequestID, RemoteSessionID: remoteID, Workspace: ws.Name, Tool: "capability_list", Status: "ok"})
@@ -993,13 +973,11 @@ func (r *Runtime) toolWorkspaceList(ctx context.Context, req *mcp.CallToolReques
 	list := r.reg.List()
 	items := make([]map[string]any, 0, len(list))
 	for _, w := range list {
-		projectRootRequired := w.ProjectRootRequired || gitTop(ctx, w.Path) != ""
 		items = append(items, map[string]any{
-			"name":                  w.Name,
-			"path":                  w.Path,
-			"description":           w.Description,
-			"approval_mode":         w.ApprovalMode,
-			"project_root_required": projectRootRequired,
+			"name":          w.Name,
+			"path":          w.Path,
+			"description":   w.Description,
+			"approval_mode": w.ApprovalMode,
 		})
 	}
 	r.logAudit(audit.Event{RequestID: envReq.RequestID, Tool: "workspace", Status: "ok"})

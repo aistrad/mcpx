@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -14,13 +13,6 @@ import (
 // environment_read so each semantic operation has one canonical public tool.
 func (r *Runtime) toolRead(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 	req, view := canonicalReadRequest(req)
-	if err := validateReadViewArguments(req, view); err != nil {
-		envReq, _, fail := r.remoteRequest(ctx, req)
-		if fail != nil {
-			return fail, nil
-		}
-		return r.terminalError(envReq, envReq.RemoteSessionID, envReq.Workspace, "INVALID_ARGUMENT", err.Error())
-	}
 	switch view {
 	case "file", "search", "list", "context":
 		return r.toolSourceRead(ctx, req)
@@ -31,37 +23,6 @@ func (r *Runtime) toolRead(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		}
 		return r.terminalError(envReq, envReq.RemoteSessionID, envReq.Workspace, "ambiguous_request", "read view cannot be inferred uniquely; provide view when the arguments are ambiguous")
 	}
-}
-
-func validateReadViewArguments(req *mcp.CallToolRequest, view string) error {
-	args := mcpresult.Arguments(req)
-	path, _ := args["path"].(string)
-	path = strings.TrimSpace(path)
-	paths, _ := args["paths"].([]any)
-	query, _ := args["query"].(string)
-	query = strings.TrimSpace(query)
-	switch view {
-	case "search":
-		if path != "" {
-			return fmt.Errorf("read(view=search) does not accept path; provide paths[] to keep the search scope explicit")
-		}
-		if len(paths) == 0 {
-			return fmt.Errorf("read(view=search) requires non-empty paths[]")
-		}
-	case "context":
-		if path != "" {
-			return fmt.Errorf("read(view=context) does not accept path; provide paths[] when a scope is required")
-		}
-	case "file":
-		if query != "" || len(paths) > 0 {
-			return fmt.Errorf("read(view=file) accepts path/items, not query or paths[]")
-		}
-	case "list":
-		if query != "" || len(paths) > 0 {
-			return fmt.Errorf("read(view=list) accepts path as its scope, not query or paths[]")
-		}
-	}
-	return nil
 }
 
 // canonicalReadRequest keeps the public read surface forgiving while the

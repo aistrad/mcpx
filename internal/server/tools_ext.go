@@ -74,21 +74,6 @@ func (r *Runtime) terminalError(envReq envelope.Request, remoteSessionID, worksp
 	return r.terminalErrorWithCleanMode(envReq, remoteSessionID, workspace, code, message, false)
 }
 
-func (r *Runtime) projectRootRequiredError(envReq envelope.Request, remoteSessionID, workspace, registeredRoot string) (*mcp.CallToolResult, error) {
-	candidates := projectRootCandidates(registeredRoot)
-	response := envelope.Fail(envelope.StatusError, envReq.RequestID, workspace, nil, "PROJECT_ROOT_REQUIRED", "project root is required for this Git Workspace; choose an explicit project or Worktree root")
-	response.RemoteSessionID = remoteSessionID
-	if response.Error != nil {
-		response.Error.Details["registered_root"] = registeredRoot
-		response.Error.Details["project_root_required"] = true
-		response.Error.Details["candidates"] = candidates
-	}
-	addRecoveryAction(&response, "session", "open or resume a Session with the exact project_root; do not use the registered parent as the code root", map[string]any{
-		"action": "open", "workspace": workspace,
-	})
-	return r.resultJSON(response)
-}
-
 func (r *Runtime) terminalErrorForContext(ctx context.Context, envReq envelope.Request, remoteSessionID, workspace, code, message string) (*mcp.CallToolResult, error) {
 	return r.terminalErrorWithCleanMode(envReq, remoteSessionID, workspace, code, message, isCleanCoreRequest(ctx))
 }
@@ -100,12 +85,6 @@ func (r *Runtime) terminalErrorWithCleanMode(envReq envelope.Request, remoteSess
 	}
 	response := envelope.Fail(status, envReq.RequestID, workspace, nil, code, message)
 	response.RemoteSessionID = remoteSessionID
-	if response.Error != nil && strings.EqualFold(strings.TrimSpace(code), "invalid_argument") {
-		response.Error.Details["schema_source"] = "tools/list"
-		if field := schemaErrorField(message); field != "" {
-			response.Error.Details["field"] = field
-		}
-	}
 	switch code {
 	case "task_not_found", "task_list_error", "not_found":
 		if strings.Contains(strings.ToLower(code+" "+message), "task") {
@@ -121,14 +100,6 @@ func (r *Runtime) terminalErrorWithCleanMode(envReq envelope.Request, remoteSess
 				})
 			}
 		}
-	case "PROJECT_ROOT_REQUIRED", "PROJECT_ROOT_INVALID", "PROJECT_ROOT_MISMATCH":
-		addRecoveryAction(&response, "session", "open or resume a Session with the exact project_root; do not use the registered parent as the code root", map[string]any{
-			"action": "open", "workspace": workspace,
-		})
-	case "WORKSPACE_BUSY":
-		addRecoveryAction(&response, "observe", "inspect the existing writer Task before retrying", map[string]any{
-			"remote_session_id": remoteSessionID, "view": "session",
-		})
 	}
 	return r.resultJSON(response)
 }
@@ -138,8 +109,7 @@ func (r *Runtime) toolFileSnapshot(ctx context.Context, req *mcp.CallToolRequest
 	if fail != nil {
 		return fail, nil
 	}
-	projectRoot := sessionProjectPath(remote)
-	snap, err := file.TakeSnapshot(projectRoot)
+	snap, err := file.TakeSnapshot(remote.WorkspacePath)
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "snap_error", err.Error())
 	}
@@ -147,10 +117,9 @@ func (r *Runtime) toolFileSnapshot(ctx context.Context, req *mcp.CallToolRequest
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "snap_error", err.Error())
 	}
 	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, map[string]any{
-		"snapshot_id":       snap.ID,
-		"at":                snap.At,
-		"stats":             map[string]any{"files": len(snap.Hash)},
-		"workspace_binding": workspaceBindingData(remote),
+		"snapshot_id": snap.ID,
+		"at":          snap.At,
+		"stats":       map[string]any{"files": len(snap.Hash)},
 	})
 }
 
@@ -173,16 +142,15 @@ func (r *Runtime) toolFileChanges(ctx context.Context, req *mcp.CallToolRequest)
 		}
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, code, err.Error())
 	}
-	projectRoot := sessionProjectPath(remote)
-	if old.WorkspaceRoot != projectRoot {
+	if old.WorkspaceRoot != remote.WorkspacePath {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "forbidden", "snapshot belongs to another workspace")
 	}
-	neu, err := file.TakeSnapshot(projectRoot)
+	neu, err := file.TakeSnapshot(remote.WorkspacePath)
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "snap_error", err.Error())
 	}
 	ch := file.DiffSnapshots(old, neu)
-	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, map[string]any{"changes": ch, "workspace_binding": workspaceBindingData(remote)})
+	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, map[string]any{"changes": ch})
 }
 
 func (r *Runtime) toolFileWatch(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -190,7 +158,7 @@ func (r *Runtime) toolFileWatch(ctx context.Context, req *mcp.CallToolRequest) (
 	if fail != nil {
 		return fail, nil
 	}
-	if !r.effectiveConfig(sessionProjectPath(remote)).FileWatch.Enabled {
+	if !r.effectiveConfig(remote.WorkspacePath).FileWatch.Enabled {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "disabled", "file watch is disabled")
 	}
 	// Pull-based: same as changes against a stored snapshot.
@@ -265,10 +233,10 @@ func (r *Runtime) mcpToolCallWithObservedSession(ctx context.Context, req *mcp.C
 	// returns a persisted result and must not depend on the current MCP
 	// configuration, so a removed server or disabled discovery cannot block it.
 	resolveServer := func() (config.MCPServer, error) {
-		if !r.effectiveConfig(sessionProjectPath(remote)).Discovery.MCP.Enabled {
+		if !r.effectiveConfig(remote.WorkspacePath).Discovery.MCP.Enabled {
 			return config.MCPServer{}, errMCPDisabled
 		}
-		manager, err := r.mcpManagerForWorkspace(sessionProjectPath(remote))
+		manager, err := r.mcpManagerForWorkspace(remote.WorkspacePath)
 		if err != nil {
 			return config.MCPServer{}, err
 		}
@@ -398,15 +366,7 @@ func (r *Runtime) toolMCPCallOnSession(ctx context.Context, req *mcp.CallToolReq
 	if upstreamTool == nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "MCP_TOOL_NOT_FOUND", "upstream MCP tool was not selected by preflight")
 	}
-	lease, leaseErr := r.acquireWriterLease(ctx, remote, remote.OwnerPrincipalID)
-	if leaseErr != nil {
-		details, _ := writerLeaseError(leaseErr)
-		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, details, "WORKSPACE_BUSY", leaseErr.Error())
-		response.RemoteSessionID = remote.ID
-		return r.resultJSON(response)
-	}
-	defer r.releaseWriterLease(context.Background(), lease)
-	eff := r.effectiveConfig(sessionProjectPath(remote))
+	eff := r.effectiveConfig(remote.WorkspacePath)
 	serverName := strings.TrimSpace(stringPayload(envReq.Payload, "server"))
 	toolName := strings.TrimSpace(stringPayload(envReq.Payload, "tool"))
 	args, _ := envReq.Payload["arguments"].(map[string]any)
@@ -538,25 +498,16 @@ func (r *Runtime) toolSkillExecute(ctx context.Context, req *mcp.CallToolRequest
 	}
 	name, _ := envReq.Payload["name"].(string)
 	args := envReq.Payload["arguments"]
-	projectRoot := sessionProjectPath(remote)
-	eff := r.effectiveConfig(projectRoot)
+	eff := r.effectiveConfig(remote.WorkspacePath)
 	if !eff.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "disabled", "skill discovery is disabled")
 	}
-	skills := skill.LoadAll(eff.Discovery.Skills.Dirs, projectRoot)
+	skills := skill.LoadAll(eff.Discovery.Skills.Dirs, remote.WorkspacePath)
 	sk, ok := skill.Find(skills, name)
 	if !ok {
 		return r.skillNotFound(envReq, remote.ID, remote.WorkspaceName, name)
 	}
-	lease, leaseErr := r.acquireWriterLease(ctx, remote, remote.OwnerPrincipalID)
-	if leaseErr != nil {
-		details, _ := writerLeaseError(leaseErr)
-		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, details, "WORKSPACE_BUSY", leaseErr.Error())
-		response.RemoteSessionID = remote.ID
-		return r.resultJSON(response)
-	}
-	defer r.releaseWriterLease(context.Background(), lease)
-	out, err := skill.Execute(ctx, sk, projectRoot, args)
+	out, err := skill.Execute(ctx, sk, remote.WorkspacePath, args)
 	if err != nil {
 		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, out, "skill_error", err.Error())
 		response.RemoteSessionID = remote.ID

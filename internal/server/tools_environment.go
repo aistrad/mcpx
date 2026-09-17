@@ -33,7 +33,7 @@ func (r *Runtime) toolEnvironmentInspect(ctx context.Context, req *mcp.CallToolR
 		if workspaceName != "" && workspaceName != session.WorkspaceName {
 			return r.environmentError(envReq, remoteSessionID, workspaceName, fmt.Errorf("workspace does not match Remote Session"), "invalid_request")
 		}
-		workspaceName, workspacePath = session.WorkspaceName, sessionProjectPath(session)
+		workspaceName, workspacePath = session.WorkspaceName, session.WorkspacePath
 	} else if workspaceName != "" {
 		workspace, ok := r.reg.Get(workspaceName)
 		if !ok {
@@ -108,7 +108,7 @@ func (r *Runtime) ensureSessionEnvironment(ctx context.Context, principal auth.P
 		result.EnvironmentStaticDigest = snapshot.StaticDigest
 		return nil
 	}
-	report := environment.Inspect(ctx, sessionProjectPath(current), nil)
+	report := environment.Inspect(ctx, current.WorkspacePath, nil)
 	snapshot, err := r.environment.Save(ctx, current.ID, report)
 	if err != nil {
 		return err

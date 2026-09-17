@@ -181,7 +181,7 @@ func TestProgressRejectsLegacyFieldShape(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, _ := result.Content[0].(*mcp.TextContent)
-	if text == nil || (!strings.Contains(text.Text, "unknown field") && !strings.Contains(fmt.Sprint(result.StructuredContent), "unknown field")) {
+	if text == nil || (!strings.Contains(text.Text, "progress current is required") && !strings.Contains(fmt.Sprint(result.StructuredContent), "progress current is required")) {
 		t.Fatalf("legacy field shape was not rejected: %+v", result)
 	}
 }

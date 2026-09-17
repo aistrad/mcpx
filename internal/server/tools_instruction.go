@@ -15,7 +15,6 @@ func (r *Runtime) toolAgentInstructionList(ctx context.Context, req *mcp.CallToo
 	if fail != nil {
 		return fail, nil
 	}
-	projectRoot := sessionProjectPath(remote)
 	anchor, _ := envReq.Payload["anchor_path"].(string)
 	var paths []string
 	if raw, ok := envReq.Payload["paths"].([]any); ok {
@@ -25,9 +24,9 @@ func (r *Runtime) toolAgentInstructionList(ctx context.Context, req *mcp.CallToo
 			}
 		}
 	}
-	maxBytes := r.effectiveConfig(projectRoot).Security.Files.MaxReadBytes
+	maxBytes := r.effectiveConfig(remote.WorkspacePath).Security.Files.MaxReadBytes
 	docs := instruction.DiscoverAt(
-		r.cfg.Discovery.Instructions.GlobalAgentsPath, projectRoot, anchor, maxBytes,
+		r.cfg.Discovery.Instructions.GlobalAgentsPath, remote.WorkspacePath, anchor, maxBytes,
 	)
 	data := map[string]any{
 		"instructions":         docs,
@@ -36,7 +35,7 @@ func (r *Runtime) toolAgentInstructionList(ctx context.Context, req *mcp.CallToo
 	}
 	if len(paths) > 0 {
 		data["resolution"] = instruction.ResolveForPaths(
-			r.cfg.Discovery.Instructions.GlobalAgentsPath, projectRoot, paths, maxBytes,
+			r.cfg.Discovery.Instructions.GlobalAgentsPath, remote.WorkspacePath, paths, maxBytes,
 		)
 	}
 	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, data)
@@ -47,15 +46,14 @@ func (r *Runtime) toolAgentInstructionRead(ctx context.Context, req *mcp.CallToo
 	if fail != nil {
 		return fail, nil
 	}
-	projectRoot := sessionProjectPath(remote)
 	id, _ := envReq.Payload["id"].(string)
 	anchor, _ := envReq.Payload["anchor_path"].(string)
 	document, content, err := instruction.ReadAt(
 		r.cfg.Discovery.Instructions.GlobalAgentsPath,
-		projectRoot,
+		remote.WorkspacePath,
 		anchor,
 		id,
-		r.effectiveConfig(projectRoot).Security.Files.MaxReadBytes,
+		r.effectiveConfig(remote.WorkspacePath).Security.Files.MaxReadBytes,
 	)
 	if err != nil {
 		code := "instruction_read_error"

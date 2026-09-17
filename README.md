@@ -436,9 +436,8 @@ curl -sS -m 5 \
 
 ### 1. 建立会话和能力缓存
 
-1. Workspace 名称未知时先调用零参数 `workspace`，从返回清单中选择项目；Git Workspace 还必须明确选择 `project_root`。
-2. 使用 `session(action="open", workspace="...", project_root="...")` 创建 Remote Session；省略 `action` 也默认 open。`project_root` 创建后不可切换，注册 Workspace 根只用于授权边界。
-   代码写入和非只读执行按该 project root 使用 SQLite writer lease；同一 Worktree 的并发写者会收到 `WORKSPACE_BUSY`，外部绕过 MCPX 的进程不在此租约保护范围内。
+1. Workspace 名称未知时先调用零参数 `workspace`，从返回清单中选择项目。
+2. 使用 `session(action="open", workspace="...")` 创建 Remote Session；省略 `action` 也默认 open。
 3. 保存服务端返回的完整 `remote_session_id`。恢复已有会话时再次调用
    `session(action="open", remote_session_id="...")`，不要改写、缩写或重建这个 ID。
 4. `session` bootstrap 已返回工具能力、compact Skill/MCP inventory、适用指令、项目摘要和一组 Runtime revision；
@@ -627,14 +626,13 @@ Operation 结果直接包含 `completed_in_call=true`；需要 Task 生命周期
 ### 5. Plan、Artifact 与扩展
 
 `plan(action="create|read|advance|complete|block|replan|deliver")` 只引用服务端
-返回的 `plan_id`、`plan_task_id` 和结构化 evidence；`create.tasks[].local_id` 仅在创建请求内解析依赖。
-Plan 是按本次任务要求保存证据的可选工具，不是所有交付都必须经过的生命周期；需要时可采用：
+返回的 `plan_id`、`plan_task_id` 和结构化 evidence；`create.tasks[].local_id` 仅在创建请求内解析依赖。典型路径是：
 
 ```text
 plan(create) → plan(advance) → edit/execute → artifact(register) → plan(complete) → plan(deliver)
 ```
 
-产物使用 `artifact(action="register|list|read")`；注册时持久化 `source_encoding`/`source_bom`，默认只返回结构化引用，不附加宿主文件链接；只有明确要求下载/物化时才设置 `include_resource_link=true`。读取时
+产物使用 `artifact(action="register|list|read")`；注册时持久化 `source_encoding`/`source_bom`，读取时
 `source_offset`/`next_source_offset` 始终使用源文件 byte 坐标。UTF-8/UTF-16 文本通过
 `delivery_encoding=utf-8` 返回 `text`，二进制通过 `delivery_encoding=base64` 返回 `base64`，不会把任意字节伪装成文本。
 
@@ -667,9 +665,7 @@ operation_manage(action="result", operation_id="op_...")
 不要通过重复 `status` 轮询等待同一个操作；运行中的操作会返回一次性的
 `next_action`，通常应直接执行一次 `wait`。`operation_manage` 的批量模式只接受
 `operation_ids`，且仅支持 `status` 和 `result`，不能把它再次嵌套进
-`operation_batch`。批量回执保留每个 operation 的 `items`；可用
-`successful_operation_ids`、`failed_operation_ids` 以及各项的
-`successful_step_ids`/`failed_step_ids` 区分局部成功和失败。
+`operation_batch`。
 
 当异步操作内部执行 `execute` 时，MCPX 会等待其终端 Task 进入最终状态后
 再记录 `operation.completed`。`wait` 直接在 `steps[].result` 返回已展开的机器结果，

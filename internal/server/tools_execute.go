@@ -49,7 +49,6 @@ func (r *Runtime) cleanExecuteReadyForIdempotency(ctx context.Context, req *mcp.
 	if fail != nil {
 		return false
 	}
-	projectRoot := sessionProjectPath(remote)
 	purpose, scope, intentErr := commandIntent(envReq)
 	if intentErr != nil {
 		return false
@@ -74,7 +73,7 @@ func (r *Runtime) cleanExecuteReadyForIdempotency(ctx context.Context, req *mcp.
 		if command != "" {
 			return false
 		}
-		discovered, ok := projecttask.Find(projectRoot, taskName)
+		discovered, ok := projecttask.Find(remote.WorkspacePath, taskName)
 		if !ok {
 			return false
 		}
@@ -83,7 +82,7 @@ func (r *Runtime) cleanExecuteReadyForIdempotency(ctx context.Context, req *mcp.
 	if command == "" {
 		return false
 	}
-	decision := security.MatchCommand(r.effectiveConfig(projectRoot).Security.Commands, command)
+	decision := security.MatchCommand(r.effectiveConfig(remote.WorkspacePath).Security.Commands, command)
 	if decision == security.Deny {
 		return false
 	}

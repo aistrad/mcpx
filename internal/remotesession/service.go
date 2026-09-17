@@ -65,13 +65,9 @@ func (s *Service) notifyEvent(session Session, event Event) {
 }
 
 type Session struct {
-	ID            string `json:"remote_session_id"`
-	WorkspaceName string `json:"workspace"`
-	WorkspacePath string `json:"-"`
-	// ProjectPath is the immutable project/worktree root selected within the
-	// registered Workspace.  WorkspacePath remains the registered boundary.
-	ProjectPath           string     `json:"project_path,omitempty"`
-	ProjectBound          bool       `json:"project_bound"`
+	ID                    string     `json:"remote_session_id"`
+	WorkspaceName         string     `json:"workspace"`
+	WorkspacePath         string     `json:"-"`
 	Label                 string     `json:"label"`
 	Description           string     `json:"description"`
 	Status                string     `json:"status"`
@@ -89,7 +85,6 @@ type Session struct {
 type CreateInput struct {
 	WorkspaceName   string
 	WorkspacePath   string
-	ProjectPath     string
 	Label           string
 	Description     string
 	BaseGitHead     string
@@ -150,9 +145,6 @@ func (s *Service) Create(ctx context.Context, principal auth.Principal, in Creat
 	if strings.TrimSpace(in.WorkspaceName) == "" || strings.TrimSpace(in.WorkspacePath) == "" {
 		return CreateResult{}, fmt.Errorf("%w: workspace required", ErrInvalidInput)
 	}
-	if strings.TrimSpace(in.ProjectPath) == "" {
-		in.ProjectPath = in.WorkspacePath
-	}
 	if strings.TrimSpace(in.Label) == "" {
 		in.Label = "Remote development session"
 	}
@@ -197,16 +189,16 @@ func (s *Service) Create(ctx context.Context, principal auth.Principal, in Creat
 	}
 	expiresAt := now.Add(24 * time.Hour)
 	session := Session{
-		ID: sessionID, WorkspaceName: in.WorkspaceName, WorkspacePath: in.WorkspacePath, ProjectPath: in.ProjectPath, ProjectBound: true,
+		ID: sessionID, WorkspaceName: in.WorkspaceName, WorkspacePath: in.WorkspacePath,
 		Label: in.Label, Description: in.Description, Status: "active",
 		OwnerPrincipalID: principal.ID, Role: "owner", BaseGitHead: in.BaseGitHead,
 		BaseTreeDigest: in.BaseTreeDigest, Version: 1, CreatedAt: now, LastActiveAt: now,
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO remote_sessions
-		(id, workspace_name, workspace_path, project_path, project_bound, label, description, status, owner_principal_id,
+        (id, workspace_name, workspace_path, label, description, status, owner_principal_id,
          base_git_head, base_tree_digest, version, created_at, last_active_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?, ?, 1, ?, ?)`,
-		session.ID, session.WorkspaceName, session.WorkspacePath, session.ProjectPath, boolInt(session.ProjectBound), session.Label, session.Description,
+        VALUES (?, ?, ?, ?, ?, 'active', ?, ?, ?, 1, ?, ?)`,
+		session.ID, session.WorkspaceName, session.WorkspacePath, session.Label, session.Description,
 		principal.ID, nullable(session.BaseGitHead), nullable(session.BaseTreeDigest), now.UnixMilli(), now.UnixMilli()); err != nil {
 		return CreateResult{}, err
 	}
@@ -258,7 +250,7 @@ func (s *Service) List(ctx context.Context, principal auth.Principal, in ListInp
 	if in.Limit <= 0 || in.Limit > 100 {
 		in.Limit = 20
 	}
-	query := `SELECT rs.id, rs.workspace_name, rs.workspace_path, rs.project_path, rs.project_bound, rs.label, rs.description,
+	query := `SELECT rs.id, rs.workspace_name, rs.workspace_path, rs.label, rs.description,
         rs.status, rs.owner_principal_id, m.role, COALESCE(rs.base_git_head,''),
         COALESCE(rs.base_tree_digest,''), COALESCE(rs.environment_snapshot_id,''),
         rs.version, rs.created_at, rs.last_active_at, rs.closed_at
@@ -312,8 +304,8 @@ func (s *Service) List(ctx context.Context, principal auth.Principal, in ListInp
 }
 
 func (s *Service) Get(ctx context.Context, principal auth.Principal, sessionID string) (Session, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT rs.id, rs.workspace_name, rs.workspace_path, rs.project_path, rs.project_bound, rs.label,
-		rs.description, rs.status, rs.owner_principal_id, m.role, COALESCE(rs.base_git_head,''),
+	row := s.db.QueryRowContext(ctx, `SELECT rs.id, rs.workspace_name, rs.workspace_path, rs.label,
+        rs.description, rs.status, rs.owner_principal_id, m.role, COALESCE(rs.base_git_head,''),
         COALESCE(rs.base_tree_digest,''), COALESCE(rs.environment_snapshot_id,''), rs.version,
         rs.created_at, rs.last_active_at, rs.closed_at
         FROM remote_sessions rs JOIN remote_session_members m ON m.remote_session_id = rs.id
@@ -609,15 +601,12 @@ func scanSession(row scanner) (Session, error) {
 	var session Session
 	var createdAt, lastActiveAt int64
 	var closedAt sql.NullInt64
-	err := row.Scan(&session.ID, &session.WorkspaceName, &session.WorkspacePath, &session.ProjectPath, &session.ProjectBound, &session.Label,
+	err := row.Scan(&session.ID, &session.WorkspaceName, &session.WorkspacePath, &session.Label,
 		&session.Description, &session.Status, &session.OwnerPrincipalID, &session.Role,
 		&session.BaseGitHead, &session.BaseTreeDigest, &session.EnvironmentSnapshotID,
 		&session.Version, &createdAt, &lastActiveAt, &closedAt)
 	if err != nil {
 		return Session{}, err
-	}
-	if strings.TrimSpace(session.ProjectPath) == "" {
-		session.ProjectPath = session.WorkspacePath
 	}
 	session.CreatedAt = time.UnixMilli(createdAt).UTC()
 	session.LastActiveAt = time.UnixMilli(lastActiveAt).UTC()
@@ -668,13 +657,6 @@ func nullable(value string) any {
 		return nil
 	}
 	return value
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func placeholders(count int) string {
