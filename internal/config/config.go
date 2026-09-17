@@ -1,5 +1,7 @@
 package config
 
+const WorkspaceApprovalModeExternalManualAutoContinue = "external_manual_auto_continue"
+
 // Config is the Runtime YAML schema (global + project merge result).
 type Config struct {
 	Server     ServerConfig     `yaml:"server"`
@@ -120,6 +122,10 @@ type WorkspaceEntry struct {
 	Name        string `yaml:"name"`
 	Path        string `yaml:"path"`
 	Description string `yaml:"description"`
+	// ApprovalMode controls only MCPX's deterministic execution continuation.
+	// Empty keeps the normal confirmation policy; external_manual_auto_continue
+	// is intentionally workspace-scoped and never changes destructive tools.
+	ApprovalMode string `yaml:"approval_mode,omitempty"`
 }
 
 type TerminalConfig struct {

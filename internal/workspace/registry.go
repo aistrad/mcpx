@@ -3,6 +3,7 @@ package workspace
 import (
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"mcpx/internal/config"
@@ -26,11 +27,16 @@ func NewRegistry(entries []config.WorkspaceEntry) (*Registry, error) {
 		if err != nil {
 			return nil, err
 		}
+		approvalMode := strings.TrimSpace(e.ApprovalMode)
+		if approvalMode != "" && approvalMode != config.WorkspaceApprovalModeExternalManualAutoContinue {
+			return nil, fmt.Errorf("workspace %q has unsupported approval_mode %q", e.Name, e.ApprovalMode)
+		}
 		ws := Workspace{
-			ID:          e.Name,
-			Name:        e.Name,
-			Path:        abs,
-			Description: e.Description,
+			ID:           e.Name,
+			Name:         e.Name,
+			Path:         abs,
+			Description:  e.Description,
+			ApprovalMode: approvalMode,
 		}
 		r.byName[e.Name] = ws
 		r.order = append(r.order, e.Name)

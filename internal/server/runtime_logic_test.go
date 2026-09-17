@@ -145,6 +145,129 @@ func TestTerminalExecRunsAfterSemanticConfirmation(t *testing.T) {
 	}
 }
 
+func TestExternalManualAutoContinueOnlyCoversBoundedExecution(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MCPX_HOME", home)
+	ws := filepath.Join(home, "manual")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Workspaces = []config.WorkspaceEntry{{
+		Name:         "ais-manual",
+		Path:         ws,
+		ApprovalMode: config.WorkspaceApprovalModeExternalManualAutoContinue,
+	}}
+	cfg.Security.Commands = config.CommandRules{
+		Default: "deny",
+		Confirm: []string{`^python3 -$`, `^echo\b`, `^git push`},
+	}
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	if err := config.WriteGlobal(filepath.Join(home, "config.yaml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := rt.principalFromContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := rt.remote.Create(context.Background(), principal, remotesession.CreateInput{
+		WorkspaceName: "ais-manual", WorkspacePath: ws, Label: "external manual auto continue",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeResult, err := rt.toolCommandExecute(withCleanCoreRequest(context.Background()), mcpresult.Request(map[string]any{
+		"action": "run", "remote_session_id": created.Session.ID,
+		"purpose": "run a bounded external manual probe", "scope": "workspace",
+		"runtime": "python", "script": "print('auto-continued')\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeResponse := decodeToolResult(t, runtimeResult)
+	if runtimeResponse["status"] == "waiting_confirmation" {
+		t.Fatalf("bounded runtime must auto-continue: %+v", runtimeResponse)
+	}
+	if runtimeResponse["status"] != "ok" {
+		t.Fatalf("bounded runtime failed: %+v", runtimeResponse)
+	}
+	if pending := rt.approvals.ListRemoteSession(created.Session.ID); len(pending) != 0 {
+		t.Fatalf("auto-continued runtime must not create a pending approval: %+v", pending)
+	}
+
+	shellResult, err := rt.toolCommandExecute(withCleanCoreRequest(context.Background()), mcpresult.Request(map[string]any{
+		"action": "run", "remote_session_id": created.Session.ID,
+		"purpose": "run a shell command", "scope": "workspace", "command": "echo shell-confirm",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	shellResponse := decodeToolResult(t, shellResult)
+	if shellResponse["status"] != "waiting_confirmation" {
+		t.Fatalf("arbitrary shell command must retain confirmation: %+v", shellResponse)
+	}
+
+	argvResult, err := rt.toolCommandExecute(withCleanCoreRequest(context.Background()), mcpresult.Request(map[string]any{
+		"action": "run", "remote_session_id": created.Session.ID,
+		"purpose": "verify git push remains guarded", "scope": "workspace",
+		"argv": []any{"git", "push"}, "shell": false,
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	argvResponse := decodeToolResult(t, argvResult)
+	if argvResponse["status"] != "waiting_confirmation" {
+		t.Fatalf("git push must retain confirmation: %+v", argvResponse)
+	}
+}
+
+func TestExternalManualApprovalModeDoesNotAffectOtherWorkspace(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("MCPX_HOME", home)
+	ws := filepath.Join(home, "project")
+	if err := os.MkdirAll(ws, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.DefaultConfig()
+	cfg.Workspaces = []config.WorkspaceEntry{{Name: "project", Path: ws}}
+	cfg.Security.Commands = config.CommandRules{Confirm: []string{`^python3 -$`}}
+	cfg.Logging.Dir = filepath.Join(home, "logs")
+	if err := config.WriteGlobal(filepath.Join(home, "config.yaml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+	rt, err := New(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	principal, err := rt.principalFromContext(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	created, err := rt.remote.Create(context.Background(), principal, remotesession.CreateInput{
+		WorkspaceName: "project", WorkspacePath: ws, Label: "ordinary workspace",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := rt.toolCommandExecute(withCleanCoreRequest(context.Background()), mcpresult.Request(map[string]any{
+		"action": "run", "remote_session_id": created.Session.ID,
+		"purpose": "run an ordinary workspace probe", "scope": "workspace",
+		"runtime": "python", "script": "print('must-confirm')\n",
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response := decodeToolResult(t, result)
+	if response["status"] != "waiting_confirmation" {
+		t.Fatalf("ordinary workspace must retain confirmation: %+v", response)
+	}
+}
+
 func TestTerminalStartUsesCommandPolicy(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("MCPX_HOME", home)

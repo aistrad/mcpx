@@ -101,6 +101,8 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		}
 		analysis = readonlySQLiteAnalysis(command)
 	}
+	autoContinue := r.externalManualAutoContinue(remote.WorkspaceName) &&
+		autoConfirmableExternalManualExecution(envReq.Payload, runtimeSpec, argvSpec)
 	decision := analysis.Decision
 	yieldForRequest := commandYield(envReq.Payload)
 	if runtimeSpec != nil {
@@ -128,6 +130,19 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		}
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "denied", message)
 	case security.Confirm:
+		if autoContinue {
+			r.logAudit(audit.Event{
+				RequestID: envReq.RequestID, RemoteSessionID: remote.ID, Workspace: remote.WorkspaceName,
+				Tool: "execute", Command: command, Status: "auto_confirmed",
+				Detail: map[string]any{
+					"approval_mode":             config.WorkspaceApprovalModeExternalManualAutoContinue,
+					"command_digest":            commandDigest,
+					"execution_shape":           externalManualExecutionShape(runtimeSpec, argvSpec),
+					"dangerous_tools_unchanged": true,
+				},
+			})
+			return executeApproved(yieldForRequest)
+		}
 		yield := yieldForRequest
 		confirmationToken := stringPayload(envReq.Payload, "confirmation_token")
 		if isCleanCoreRequest(ctx) {
@@ -433,6 +448,50 @@ func commandIntent(req envelope.Request) (purpose, scope string, err error) {
 		return "", "", fmt.Errorf("unsupported execution scope %q; only workspace is allowed", scope)
 	}
 	return purpose, scope, nil
+}
+
+// autoConfirmableExternalManualExecution covers only the bounded execution
+// shapes used by the external Web manual workflow. Arbitrary shell commands
+// and discovered project tasks retain the normal semantic confirmation path.
+// workspace_transition is always excluded because it changes frozen Git
+// identity and has its own verification/approval contract.
+func autoConfirmableExternalManualExecution(payload map[string]any, runtimeSpec *ephemeralRuntimeSpec, argvSpec *terminal.ProcessSpec) bool {
+	if transition, present := payload["workspace_transition"]; present && transition != nil {
+		return false
+	}
+	if runtimeSpec != nil {
+		return true
+	}
+	return argvSpec != nil && autoConfirmableExternalManualArgv(argvSpec)
+}
+
+func externalManualExecutionShape(runtimeSpec *ephemeralRuntimeSpec, argvSpec *terminal.ProcessSpec) string {
+	if runtimeSpec != nil {
+		return "runtime:" + runtimeSpec.Runtime
+	}
+	if argvSpec != nil {
+		return "argv"
+	}
+	return "unknown"
+}
+
+func autoConfirmableExternalManualArgv(spec *terminal.ProcessSpec) bool {
+	name := strings.ToLower(filepath.Base(spec.Executable))
+	switch name {
+	case "sh", "bash", "zsh", "fish", "dash", "pwsh", "powershell", "cmd", "cmd.exe":
+		return false
+	case "rm", "rmdir", "del", "erase", "shutdown", "reboot", "systemctl", "docker", "npm", "curl", "wget", "ssh", "scp":
+		return false
+	case "git":
+		if len(spec.Args) == 0 {
+			return true
+		}
+		switch strings.ToLower(spec.Args[0]) {
+		case "push", "reset", "clean", "update-ref", "rebase", "merge", "checkout", "switch", "restore", "worktree":
+			return false
+		}
+	}
+	return true
 }
 
 func commandFailureCode(exitCode int, _ string) string {
