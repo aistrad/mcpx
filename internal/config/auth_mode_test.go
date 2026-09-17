@@ -31,3 +31,15 @@ func TestTransportSessionIdleTTLDefaultsToDay(t *testing.T) {
 		t.Fatalf("invalid TTL = %s", got)
 	}
 }
+
+func TestWriterLeaseTTLIsBounded(t *testing.T) {
+	if got := WriterLeaseTTL(TransportConfig{}); got != 2*time.Minute {
+		t.Fatalf("default writer lease TTL = %s", got)
+	}
+	if got := WriterLeaseTTL(TransportConfig{WriterLeaseTTL: "10m"}); got != 10*time.Minute {
+		t.Fatalf("configured writer lease TTL = %s", got)
+	}
+	if got := WriterLeaseTTL(TransportConfig{WriterLeaseTTL: "1s"}); got != 2*time.Minute {
+		t.Fatalf("too-short writer lease TTL = %s", got)
+	}
+}

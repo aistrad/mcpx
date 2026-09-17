@@ -514,6 +514,20 @@ var migrations = []string{
 			state_event_id = 'operation:' || hex(id) || ':' || (state_sequence + 1)
 			WHERE id = NEW.operation_id AND state NOT IN ('succeeded','failed','interrupted','cancelled');
 	END;`,
+	`ALTER TABLE remote_sessions ADD COLUMN project_path TEXT NOT NULL DEFAULT '';
+	UPDATE remote_sessions SET project_path = workspace_path WHERE project_path = '';`,
+	`ALTER TABLE remote_sessions ADD COLUMN project_bound INTEGER NOT NULL DEFAULT 0;`,
+	`CREATE TABLE IF NOT EXISTS workspace_writer_leases (
+		project_path TEXT PRIMARY KEY,
+		lease_id TEXT NOT NULL UNIQUE,
+		remote_session_id TEXT NOT NULL,
+		principal_id TEXT NOT NULL,
+		expires_at INTEGER NOT NULL,
+		updated_at INTEGER NOT NULL,
+		FOREIGN KEY (remote_session_id) REFERENCES remote_sessions(id) ON DELETE CASCADE
+	);
+	CREATE INDEX IF NOT EXISTS idx_workspace_writer_leases_expiry
+		ON workspace_writer_leases(expires_at);`,
 }
 
 func applyMigrations(ctx context.Context, db *sql.DB) error {

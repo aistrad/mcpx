@@ -26,8 +26,10 @@ func (r *Runtime) toolProjectInspect(ctx context.Context, req *mcp.CallToolReque
 	if fail != nil {
 		return fail, nil
 	}
-	data := inspectProject(ctx, session.WorkspacePath)
-	data["agent_instructions"] = r.agentInstructions(session.WorkspacePath)
+	projectRoot := sessionProjectPath(session)
+	data := inspectProject(ctx, projectRoot)
+	data["agent_instructions"] = r.agentInstructions(projectRoot)
+	data["workspace_binding"] = workspaceBindingData(session)
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, data)
 }
 

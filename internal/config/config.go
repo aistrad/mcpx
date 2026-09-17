@@ -54,6 +54,7 @@ type OAuthConfig struct {
 
 type TransportConfig struct {
 	SessionIdleTTL string `yaml:"session_idle_ttl"` // Go duration, e.g. "1h"
+	WriterLeaseTTL string `yaml:"writer_lease_ttl"` // Go duration for project writer leases
 }
 
 type LimitsConfig struct {
@@ -122,6 +123,9 @@ type WorkspaceEntry struct {
 	Name        string `yaml:"name"`
 	Path        string `yaml:"path"`
 	Description string `yaml:"description"`
+	// ProjectRootRequired prevents a navigation Workspace (for example the
+	// shared parent work directory) from being used as a code root itself.
+	ProjectRootRequired bool `yaml:"project_root_required,omitempty"`
 	// ApprovalMode controls only MCPX's deterministic execution continuation.
 	// Empty keeps the normal confirmation policy; external_manual_auto_continue
 	// is intentionally workspace-scoped and never changes destructive tools.
@@ -191,7 +195,7 @@ func DefaultConfig() Config {
 			Token: "",
 			OAuth: OAuthConfig{TokenTTL: 86400},
 		},
-		Transport: TransportConfig{SessionIdleTTL: "24h"},
+		Transport: TransportConfig{SessionIdleTTL: "24h", WriterLeaseTTL: "2m"},
 		Limits:    LimitsConfig{MaxResultBytes: 256 << 10},
 		State: StateConfig{Retention: RetentionConfig{
 			Enabled:             true,

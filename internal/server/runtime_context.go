@@ -205,5 +205,13 @@ func (r *Runtime) changeRequest(ctx context.Context, req *mcp.CallToolRequest, e
 		result, _ := r.remoteError(envReq, remoteSessionID, session.WorkspaceName, remotesession.ErrForbidden)
 		return envReq, principal, remotesession.Session{}, result
 	}
+	if err := r.validateSessionProjectRoot(session); err != nil {
+		result, _ := r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_INVALID", err.Error())
+		return envReq, principal, remotesession.Session{}, result
+	}
+	if edit && !session.ProjectBound {
+		result, _ := r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_REQUIRED", "Remote Session has no immutable project_root binding; open a new Session with project_root before changing files or running commands")
+		return envReq, principal, remotesession.Session{}, result
+	}
 	return envReq, principal, session, nil
 }

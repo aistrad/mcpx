@@ -138,7 +138,7 @@ func TestPublicCatalogIsExactlyTheCleanCoreContract(t *testing.T) {
 	if safety == nil {
 		t.Fatalf("edit must expose mcpx/safety metadata: %+v", editTool.Meta)
 	}
-	if safety["scope"] != "registered_workspace_root" || safety["approval"] == "host_user_approval_required" {
+	if safety["scope"] != "session_project_root" || safety["project_root_bound"] != true || safety["approval"] == "host_user_approval_required" {
 		t.Fatalf("edit safety metadata is incomplete: %+v", safety)
 	}
 	if !strings.Contains(editTool.Description, "不提供删除") || !strings.Contains(editTool.Description, "move_out") {

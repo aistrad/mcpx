@@ -266,7 +266,7 @@ func (s *RetentionService) observationWorkspaces(ctx context.Context) ([]string,
 
 func (s *RetentionService) deleteExpiredEphemeral(ctx context.Context, now int64) (int, error) {
 	total := 0
-	for _, table := range []string{"approvals", "secret_requests", "idempotency_records", "clean_idempotency_records", "clean_edit_records"} {
+	for _, table := range []string{"approvals", "secret_requests", "idempotency_records", "clean_idempotency_records", "clean_edit_records", "workspace_writer_leases"} {
 		result, err := s.db.ExecContext(ctx, "DELETE FROM "+table+" WHERE rowid IN (SELECT rowid FROM "+table+" WHERE expires_at <= ? ORDER BY expires_at LIMIT ?)", now, retentionBatchSize)
 		if err != nil {
 			return total, fmt.Errorf("delete expired %s: %w", table, err)

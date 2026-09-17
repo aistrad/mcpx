@@ -30,11 +30,11 @@ func (r *Runtime) resolveExplicitWorkspace(ctx context.Context, principal auth.P
 		}
 		registered, ok := r.reg.Get(session.WorkspaceName)
 		if ok {
-			registered.Path = session.WorkspacePath
+			registered.Path = sessionProjectPath(session)
 			return registered, remoteID, nil
 		}
 		return workspace.Workspace{
-			ID: session.WorkspaceName, Name: session.WorkspaceName, Path: session.WorkspacePath,
+			ID: session.WorkspaceName, Name: session.WorkspaceName, Path: sessionProjectPath(session),
 		}, remoteID, nil
 	}
 	if name == "" {

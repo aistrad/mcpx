@@ -7,8 +7,9 @@ rules:
   - 不要猜测路径、API、符号、ID、revision、工具能力或执行结果；先用对应的只读工具取得证据。没有成功工具结果或验证证据时，不得声称已读取、修改、修复、构建或测试通过。
   - 每种语义使用唯一 canonical tool：源码/文件读取用 read，环境事实用 environment_read，文件变更用 edit，删除/移出用 move_out，命令/测试/构建用 execute，Session/Task/Plan/历史/日志用 observe；不要用 execute 代替文件或环境读取。
   - 修改前取得足够的当前证据并保留用户未要求的现有变更；只提交完成目标所需的最小改动。update/rename 使用服务端返回的最新 base_sha256，保持原文件编码、BOM、换行和末尾换行。
-  - effectful 工具的 purpose 必须真实描述当前用户目标、对象和实际影响；测试会执行项目代码，构建可能写缓存或产物，安装/发布/推送/部署/删除等不得虚构为只读或虚构用户授权。
+  - effectful 工具的 purpose 必须真实描述当前用户目标、对象和实际影响；测试会执行项目代码，构建可能写缓存或产物，安装/发布/推送/部署/删除等不得虚构为只读或虚构用户授权。artifact(register) 默认只登记并返回结构化引用；只有用户明确要求下载或物化时才设置 include_resource_link=true，完整内容优先用 artifact(read) 分页。
   - edit 或其他 revision-guarded 操作遇到 STALE_REVISION、冲突或限制时，优先执行 error.recovery、next_action 或 suggested_next；刷新服务端要求的证据后再重试，不要自行发明恢复协议或重放未知状态请求。
+  - 写操作或非只读执行遇到 WORKSPACE_BUSY 时，先按回执查看持有 lease 的 Session/Task，等待或停止其完成后再重试；不要覆盖租约、切换 project_root 或并行写同一 Worktree。
   - 删除、移除或清理只使用 move_out 的 prepare → 用户确认 → submit 协议；confirmation_uuid 和冻结参数由服务端绑定，submit 只按服务端返回的确认动作继续，不要改用 execute 删除。
   - execute 只运行目标确实需要的命令；按真实副作用描述 purpose，并以实际 exit_code/stdout/stderr/Task 状态作为验证证据。长任务返回 execution_task_id 后，用 observe(task/logs) 或 execute(attach) 继续。临时多行 Python/Node 且不创建 Workspace 文件时，可用 execute(action=run, runtime=python|node, script=...)。
   - observe 只观察 Runtime：无目标参数默认 session，execution_task_id 推导 task，plan_task_id 推导 plan，history 过滤条件推导 history，execution_task_id 配合 view=logs 读取日志；Workspace 当前静态内容始终使用 read。
@@ -16,7 +17,7 @@ rules:
   - Session 返回的 extension_inventory 是当前可用能力的一部分，不是单纯元数据；当 Skill 或 MCP 明显匹配、很可能匹配或能提供领域专用工作流时，优先评估该扩展。
   - Skill 的发现、详情读取和调用统一使用 skill_tool：不知道有哪些时 list；知道名字但缺少详细规则时 describe；已有足够信息时 call。模型不得维护 Skill revision token，Runtime 负责一致性校验。
   - 上游 MCP Server/Tool 的发现、详情读取和调用统一使用 mcp_tool：不知道 Server 时 list；知道 Server 但不知道 Tools 时 list(server)；缺少 Tool schema 时 describe；参数已知时 call。模型不得维护 MCP schema revision token，Runtime 负责一致性校验。
-  - progress 不作为每次工具调用的 bookkeeping；过程只在有业务意义的里程碑、等待用户、阻塞或失败时发布。任务正常完成并准备给用户最终回复前，必须调用一次 progress(status="completed")，用 current 汇总完成状态、result 列出已验证结果；若终止于等待、阻塞或失败，则使用对应 terminal status。
+  - progress 不作为每次工具调用的 bookkeeping；过程只在有业务意义的里程碑、等待用户、阻塞或失败时发布。任务正常完成并准备给用户最终回复前，必须调用一次 progress(status="completed")，用 current 汇总完成状态、result 列出已验证结果；verification 阶段同时填写 task_scope 和结构化 evidence；若终止于等待、阻塞或失败，则使用对应 terminal status。
   - 验证遵循“最小充分证据”：优先运行与改动直接相关的检查，再按风险扩大；明确区分已验证事实、未验证事项和服务端报告的限制。
 tool_routing:
   select_workspace: [workspace]

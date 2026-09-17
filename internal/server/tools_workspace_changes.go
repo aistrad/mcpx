@@ -22,7 +22,7 @@ func (r *Runtime) toolWorkspaceChanges(ctx context.Context, req *mcp.CallToolReq
 	if !present {
 		includeDiff = true
 	}
-	report, err := r.workspaceDiff.Inspect(ctx, session.ID, session.WorkspaceName, session.WorkspacePath, includeDiff)
+	report, err := r.workspaceDiff.Inspect(ctx, session.ID, session.WorkspaceName, sessionProjectPath(session), includeDiff)
 	if err != nil {
 		code := "workspace_changes_error"
 		switch {

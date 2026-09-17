@@ -35,6 +35,7 @@ var workspaceMoveOutSafetyMeta = mcp.Meta{
 		"approval":                            "web_model_user_confirmation_required",
 		"filesystem_only":                     true,
 		"registered_workspace":                true,
+		"project_root_bound":                  true,
 		"explicit_files_directories_symlinks": true,
 		"revision_guarded":                    true,
 		"no_shell_execution":                  true,
@@ -131,7 +132,7 @@ func (r *Runtime) toolWorkspaceMoveOutPrepare(ctx context.Context, req *mcp.Call
 	now := time.Now().UTC()
 	item := deletion.Request{
 		ID: moveID, RemoteSessionID: session.ID, PrincipalID: principal.ID,
-		Workspace: session.WorkspaceName, WorkspacePath: session.WorkspacePath, Purpose: envReq.Purpose,
+		Workspace: session.WorkspaceName, WorkspacePath: sessionProjectPath(session), Purpose: envReq.Purpose,
 		IdempotencyKey: key, Manifest: manifest, ManifestSHA256: manifestSHA,
 		CreatedAt: now, ExpiresAt: now.Add(deletion.DefaultTTL), UpdatedAt: now,
 	}
@@ -153,9 +154,18 @@ func (r *Runtime) toolWorkspaceMoveOutCommit(ctx context.Context, req *mcp.CallT
 	if fail != nil {
 		return fail, nil
 	}
+	if !session.ProjectBound {
+		return r.moveOutError(envReq, session, "PROJECT_ROOT_REQUIRED", "Remote Session has no immutable project_root binding; open a new Session before submitting a move-out", nil)
+	}
 	if session.Role != "owner" && session.Role != "editor" {
 		return r.moveOutError(envReq, session, "FORBIDDEN", "remote session role cannot submit a workspace move-out", nil)
 	}
+	lease, leaseErr := r.acquireWriterLease(ctx, session, principal.ID)
+	if leaseErr != nil {
+		details, _ := writerLeaseError(leaseErr)
+		return r.moveOutError(envReq, session, "WORKSPACE_BUSY", leaseErr.Error(), details)
+	}
+	defer r.releaseWriterLease(context.Background(), lease)
 	confirmationUUID := strings.TrimSpace(stringPayload(envReq.Payload, "confirmation_uuid"))
 	if confirmationUUID == "" {
 		return r.moveOutError(envReq, session, "CONFIRMATION_REQUIRED", "confirmation_uuid from move_out(action=prepare) is required after the web client obtains user confirmation", map[string]any{"field": "confirmation_uuid", "requires_user_confirmation": true})
@@ -164,7 +174,7 @@ func (r *Runtime) toolWorkspaceMoveOutCommit(ctx context.Context, req *mcp.CallT
 	if err != nil {
 		return r.moveOutError(envReq, session, "MOVE_OUT_REQUEST_NOT_FOUND", err.Error(), nil)
 	}
-	if item.RemoteSessionID != session.ID || item.PrincipalID != principal.ID || item.WorkspacePath != session.WorkspacePath || item.Workspace != session.WorkspaceName {
+	if item.RemoteSessionID != session.ID || item.PrincipalID != principal.ID || item.WorkspacePath != sessionProjectPath(session) || item.Workspace != session.WorkspaceName {
 		return r.moveOutError(envReq, session, "MOVE_OUT_MANIFEST_MISMATCH", "confirmation_uuid is not bound to this remote session and workspace", map[string]any{"move_request_id": item.ID})
 	}
 	if previewOnlyMoveOutPurpose(item.Purpose) {
@@ -208,7 +218,9 @@ func (r *Runtime) toolWorkspaceMoveOutCommit(ctx context.Context, req *mcp.CallT
 	}
 	result.IdempotentReplay = false
 	r.logAudit(audit.Event{RequestID: envReq.RequestID, RemoteSessionID: session.ID, Workspace: session.WorkspaceName, Tool: "move_out", Status: status, Detail: map[string]any{"action": "submit", "move_request_id": item.ID, "manifest_sha256": item.ManifestSHA256, "confirmation_uuid_hash": item.ConfirmationUUIDHash, "idempotency_key": item.IdempotencyKey, "target_count": len(result.Targets), "target_preview": moveOutTargetResultPreviewData(result.Targets), "moved_count": result.MovedCount, "failed_count": result.FailedCount, "idempotent_replay": result.IdempotentReplay, "audit_event_id": result.AuditEventID}})
-	return r.remoteResult(envReq, session.ID, session.WorkspaceName, moveOutCommitResponseData(result))
+	responseData := moveOutCommitResponseData(result)
+	responseData["workspace_binding"] = workspaceBindingData(session)
+	return r.remoteResult(envReq, session.ID, session.WorkspaceName, responseData)
 }
 
 func previewOnlyMoveOutPurpose(purpose string) bool {
@@ -256,7 +268,7 @@ func (r *Runtime) commitMoveOutManifest(ctx context.Context, envReq envelope.Req
 		Targets: make([]moveOutTargetResult, 0, len(item.Manifest.Targets)), MovedBytesKnown: true, Reversible: true,
 	}
 
-	workspacePath, err := filepath.Abs(session.WorkspacePath)
+	workspacePath, err := filepath.Abs(sessionProjectPath(session))
 	if err != nil {
 		for _, target := range item.Manifest.Targets {
 			result.Targets = append(result.Targets, moveOutTargetResult{Path: target.Path, Kind: target.Kind, ExpectedSHA256: target.ExpectedSHA256, Size: target.Size, Status: "failed", ErrorCode: "WORKSPACE_ROOT_ERROR"})
@@ -499,6 +511,7 @@ func (r *Runtime) moveOutPrepareResult(envReq envelope.Request, session remotese
 		"approval_surface":              "web_model_user_question",
 		"next_action":                   nextAction,
 		"filesystem_mutated":            false,
+		"workspace_binding":             workspaceBindingData(session),
 	}
 	if replay {
 		data["idempotent_replay"] = true
@@ -525,7 +538,9 @@ func (r *Runtime) moveOutCommitReplay(envReq envelope.Request, session remoteses
 		return r.moveOutError(envReq, session, "MOVE_OUT_STATE_IN_DOUBT", err.Error(), map[string]any{"move_request_id": item.ID})
 	}
 	result.IdempotentReplay = true
-	return r.remoteResult(envReq, session.ID, session.WorkspaceName, moveOutCommitResponseData(result))
+	responseData := moveOutCommitResponseData(result)
+	responseData["workspace_binding"] = workspaceBindingData(session)
+	return r.remoteResult(envReq, session.ID, session.WorkspaceName, responseData)
 }
 
 func moveOutCommitResponseData(result moveOutCommitResult) map[string]any {
@@ -600,10 +615,11 @@ func parseMoveOutTargets(payload map[string]any) ([]deletion.Target, error) {
 }
 
 func (r *Runtime) inferMoveOutTargetKinds(session remotesession.Session, targets []deletion.Target) ([]deletion.Target, error) {
-	cfg := r.effectiveConfig(session.WorkspacePath)
+	projectRoot := sessionProjectPath(session)
+	cfg := r.effectiveConfig(projectRoot)
 	resolved := append([]deletion.Target(nil), targets...)
 	for i := range resolved {
-		_, info, err := lstatMoveOutTarget(session.WorkspacePath, resolved[i].Path, cfg)
+		_, info, err := lstatMoveOutTarget(projectRoot, resolved[i].Path, cfg)
 		if err != nil {
 			return nil, err
 		}
@@ -629,11 +645,12 @@ func (r *Runtime) inferMoveOutTargetKinds(session remotesession.Session, targets
 
 func (r *Runtime) freezeMoveOutManifest(session remotesession.Session, targets []deletion.Target) (deletion.Manifest, error) {
 	manifest := deletion.Manifest{Workspace: session.WorkspaceName, Targets: make([]deletion.Target, 0, len(targets)), TotalBytesKnown: true}
+	projectRoot := sessionProjectPath(session)
 	for _, target := range targets {
-		if err := validateFrozenMoveOutTarget(session.WorkspacePath, target, r.effectiveConfig(session.WorkspacePath)); err != nil {
+		if err := validateFrozenMoveOutTarget(projectRoot, target, r.effectiveConfig(projectRoot)); err != nil {
 			return deletion.Manifest{}, err
 		}
-		absolute, err := file.LexicalPath(session.WorkspacePath, target.Path)
+		absolute, err := file.LexicalPath(projectRoot, target.Path)
 		if err != nil {
 			return deletion.Manifest{}, &moveOutValidationError{Code: "PATH_ESCAPE", Message: err.Error(), Path: target.Path}
 		}
@@ -754,7 +771,8 @@ func rejectSymlinkParentComponents(workspacePath, relativePath string) error {
 }
 
 func (r *Runtime) inspectMoveOutTargetForCommit(session remotesession.Session, target deletion.Target) ([]deletion.Target, string, error) {
-	lexical, info, err := lstatMoveOutTarget(session.WorkspacePath, target.Path, r.effectiveConfig(session.WorkspacePath))
+	projectRoot := sessionProjectPath(session)
+	lexical, info, err := lstatMoveOutTarget(projectRoot, target.Path, r.effectiveConfig(projectRoot))
 	if err != nil {
 		if moveOutErrorCode(err) == "FILE_NOT_FOUND" {
 			return nil, "", &moveOutValidationError{Code: "STALE_REVISION", Message: "move-out target no longer exists", Path: target.Path}
