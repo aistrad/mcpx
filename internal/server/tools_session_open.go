@@ -193,10 +193,12 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 			"id": session.ID, "role": session.Role, "status": session.Status,
 			"version": session.Version, "label": session.Label, "description": session.Description,
 			"workspace_name": session.WorkspaceName, "workspace_path": session.WorkspacePath,
+			"approval_mode": r.workspaceApprovalMode(session.WorkspaceName),
 		},
 		"workspace": map[string]any{
 			"name": session.WorkspaceName, "path": session.WorkspacePath,
 			"git_head": gitHead, "tree_digest": treeDigest,
+			"approval_mode": r.workspaceApprovalMode(session.WorkspaceName),
 		},
 		"revisions":       revisions,
 		"agent_guidance":  guidance,

@@ -240,6 +240,12 @@ workspaces:
   - name: my-app
     path: /Users/you/code/my-app
     description: "业务项目"
+  # 仅用于已批准的远程 Web 手动运行；只自动继续受限 argv/runtime 和工作区状态写入。
+  # 删除、move_out、push、开放世界 MCP/Skill 调用仍保留原有安全闸。
+  - name: ais-manual
+    path: /data/ais/storage/web_manual
+    description: "Web manual run inputs, outputs and checkpoints"
+    approval_mode: external_manual_auto_continue
 
 security:
   commands:
@@ -281,6 +287,11 @@ limits:
 `deny` → `confirm` → `allow` → 只读自动放行 → `default`。共享环境或公网部署建议像上面的示例一样
 把默认决策收紧为 `confirm` 或 `deny`。公网部署同时不要使用 `auth.mode: open`，应使用 `oauth`、
 `bearer` 或 `dual`，并配置最小权限规则。
+
+`workspaces[].approval_mode: external_manual_auto_continue` 只对明确注册的 Web 手动工作区生效：
+它让受限 `execute`（`argv`+`shell=false` 或 `runtime`+`script`）及其 Task 续跑不再重复等待
+语义确认。任意 shell command/task、workspace identity transition、删除/move_out、git push、
+开放世界 MCP/Skill 调用和命中 deny 的请求不受此模式影响，仍按原确认或拒绝策略处理。
 
 ### 项目配置
 

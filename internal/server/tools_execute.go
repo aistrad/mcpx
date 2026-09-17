@@ -89,6 +89,10 @@ func (r *Runtime) cleanExecuteReadyForIdempotency(ctx context.Context, req *mcp.
 	if decision != security.Confirm {
 		return true
 	}
+	if r.externalManualAutoContinue(remote.WorkspaceName) &&
+		autoConfirmableExternalManualExecution(envReq.Payload, runtimeSpec, argvSpec) {
+		return true
+	}
 	if !boolPayload(envReq.Payload, "user_confirmed") {
 		return false
 	}

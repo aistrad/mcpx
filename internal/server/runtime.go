@@ -974,9 +974,10 @@ func (r *Runtime) toolWorkspaceList(ctx context.Context, req *mcp.CallToolReques
 	items := make([]map[string]any, 0, len(list))
 	for _, w := range list {
 		items = append(items, map[string]any{
-			"name":        w.Name,
-			"path":        w.Path,
-			"description": w.Description,
+			"name":          w.Name,
+			"path":          w.Path,
+			"description":   w.Description,
+			"approval_mode": w.ApprovalMode,
 		})
 	}
 	r.logAudit(audit.Event{RequestID: envReq.RequestID, Tool: "workspace", Status: "ok"})

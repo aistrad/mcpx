@@ -27,7 +27,7 @@ func TestWorkspaceListDoesNotRequireRemoteSession(t *testing.T) {
 	cfg.Auth.Token = "workspace-token"
 	cfg.Logging.Enabled = false
 	cfg.Workspaces = []config.WorkspaceEntry{
-		{Name: "alpha", Path: alpha, Description: "Alpha workspace"},
+		{Name: "alpha", Path: alpha, Description: "Alpha workspace", ApprovalMode: config.WorkspaceApprovalModeExternalManualAutoContinue},
 		{Name: "beta", Path: beta, Description: "Beta workspace"},
 	}
 	if err := config.WriteGlobal(filepath.Join(home, "config.yaml"), cfg); err != nil {
@@ -54,6 +54,9 @@ func TestWorkspaceListDoesNotRequireRemoteSession(t *testing.T) {
 	second := items[1].(map[string]any)
 	if first["name"] != "alpha" || first["path"] != alpha || first["description"] != "Alpha workspace" {
 		t.Fatalf("first workspace=%+v", first)
+	}
+	if first["approval_mode"] != config.WorkspaceApprovalModeExternalManualAutoContinue {
+		t.Fatalf("first workspace approval mode=%+v", first["approval_mode"])
 	}
 	if second["name"] != "beta" || second["path"] != beta || second["description"] != "Beta workspace" {
 		t.Fatalf("second workspace=%+v", second)
