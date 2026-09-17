@@ -3,7 +3,6 @@ package remotesession
 import (
 	"context"
 	"errors"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -32,13 +31,8 @@ func testPrincipal(id string) auth.Principal {
 func TestCreateListGetAndIdempotency(t *testing.T) {
 	service, _ := testService(t)
 	owner := testPrincipal("owner")
-	workspaceRoot := t.TempDir()
-	projectRoot := filepath.Join(workspaceRoot, "project")
-	if err := os.MkdirAll(projectRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
 	in := CreateInput{
-		WorkspaceName: "mcpx", WorkspacePath: workspaceRoot, ProjectPath: projectRoot, Label: "session",
+		WorkspaceName: "mcpx", WorkspacePath: t.TempDir(), Label: "session",
 		ClientRequestID: "create-1", ClientName: "client-a", ClientVersion: "1",
 	}
 	first, err := service.Create(context.Background(), owner, in)
@@ -76,9 +70,6 @@ func TestCreateListGetAndIdempotency(t *testing.T) {
 	got, err := service.Get(context.Background(), owner, first.Session.ID)
 	if err != nil || got.Role != "owner" {
 		t.Fatalf("get: %+v err=%v", got, err)
-	}
-	if got.ProjectPath != first.Session.ProjectPath {
-		t.Fatalf("project path not persisted: got=%q want=%q", got.ProjectPath, first.Session.ProjectPath)
 	}
 }
 

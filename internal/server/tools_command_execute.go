@@ -36,7 +36,6 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 	if fail != nil {
 		return fail, nil
 	}
-	projectRoot := sessionProjectPath(remote)
 	purpose, scope, intentErr := commandIntent(envReq)
 	if intentErr != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "bad_request", intentErr.Error())
@@ -60,7 +59,7 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		command = argvDisplay
 	}
 	taskName := strings.TrimSpace(stringPayload(envReq.Payload, "task"))
-	if _, _, err := r.expectedExecutionWorkspace(ctx, remote.ID, projectRoot, envReq.Payload); err != nil {
+	if _, _, err := r.expectedExecutionWorkspace(ctx, remote.ID, remote.WorkspacePath, envReq.Payload); err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "WORKSPACE_IDENTITY_MISMATCH", err.Error())
 	}
 	if runtimeSpec != nil {
@@ -69,7 +68,7 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		if command != "" {
 			return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "bad_request", "command and task are mutually exclusive")
 		}
-		discovered, ok := projecttask.Find(projectRoot, taskName)
+		discovered, ok := projecttask.Find(remote.WorkspacePath, taskName)
 		if !ok {
 			return r.terminalErrorForContext(ctx, envReq, remote.ID, remote.WorkspaceName, "task_not_found", fmt.Sprintf("project task %q not found", taskName))
 		}
@@ -83,13 +82,13 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		payloadDigest = runtimeSpec.ScriptSHA256
 	}
 	commandDigest := commandRequestDigestWithPayload(envReq.RequestID, remote.ID, remote.WorkspaceName, command, purpose, scope, payloadDigest)
-	effective := r.effectiveConfig(projectRoot)
+	effective := r.effectiveConfig(remote.WorkspacePath)
 	if !effective.Terminal.Enabled {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "disabled", "terminal tools are disabled")
 	}
 	analysis := security.AnalyzeCommand(effective.Security.Commands, command)
 	if runtimeSpec != nil && runtimeSpec.Runtime == "sqlite" {
-		normalizedDatabase, normalizeErr := normalizeSQLiteDatabasePath(projectRoot, runtimeSpec.Database)
+		normalizedDatabase, normalizeErr := normalizeSQLiteDatabasePath(remote.WorkspacePath, runtimeSpec.Database)
 		if normalizeErr != nil {
 			return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SQLITE_QUERY_ERROR", normalizeErr.Error())
 		}
@@ -162,7 +161,7 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 					pending, confirmationErr = r.approvals.PutPending(approval.Pending{
 						Tool: "command_execute", Summary: command, Command: command,
 						CommandYieldMs: int(yield / time.Millisecond), Purpose: purpose, Scope: scope,
-						CommandDigest: commandDigest, WorkDir: projectRoot,
+						CommandDigest: commandDigest, WorkDir: remote.WorkspacePath,
 						RequestID: envReq.RequestID, Workspace: remote.WorkspaceName,
 						RemoteSessionID: remote.ID, PrincipalID: principal.ID,
 						ContentKey: cleanCommandConfirmationContentKey(principal.ID, commandDigest),
@@ -220,7 +219,7 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 			pending, confirmationErr := r.approvals.PutPending(approval.Pending{
 				Tool: "command_execute", Summary: command, Command: command,
 				CommandYieldMs: int(yield / time.Millisecond), Purpose: purpose, Scope: scope,
-				CommandDigest: commandDigest, WorkDir: projectRoot,
+				CommandDigest: commandDigest, WorkDir: remote.WorkspacePath,
 				RequestID: envReq.RequestID, Workspace: remote.WorkspaceName,
 				RemoteSessionID: remote.ID, PrincipalID: principal.ID,
 			})
@@ -293,25 +292,7 @@ func (r *Runtime) executeCommandTask(ctx context.Context, envReq envelope.Reques
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "bad_request", err.Error())
 	}
 	var task *terminal.Task
-	projectRoot := sessionProjectPath(remote)
-	lease := writerLease{}
-	keepLease := false
-	if !security.IsReadonlyCommand(command) {
-		var leaseErr error
-		lease, leaseErr = r.acquireWriterLease(ctx, remote, principal.ID)
-		if leaseErr != nil {
-			details, _ := writerLeaseError(leaseErr)
-			response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, details, "WORKSPACE_BUSY", leaseErr.Error())
-			response.RemoteSessionID = remote.ID
-			return r.resultJSON(response)
-		}
-		defer func() {
-			if !keepLease {
-				r.releaseWriterLease(context.Background(), lease)
-			}
-		}()
-	}
-	workDir, expected, err := r.expectedExecutionWorkspace(ctx, remote.ID, projectRoot, envReq.Payload)
+	workDir, expected, err := r.expectedExecutionWorkspace(ctx, remote.ID, remote.WorkspacePath, envReq.Payload)
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "WORKSPACE_IDENTITY_MISMATCH", err.Error())
 	}
@@ -327,14 +308,10 @@ func (r *Runtime) executeCommandTask(ctx context.Context, envReq envelope.Reques
 	if argvSpec != nil {
 		task, err = r.tasks.StartRemoteProcessWithObservationContext(envReq.RequestID, observationCallID(envReq), originTool, remote.ID, remote.WorkspaceName, workDir, command, *argvSpec)
 	} else {
-		task, err = r.tasks.StartRemoteWithObservationContext(ctx, envReq.RequestID, observationCallID(envReq), originTool, remote.ID, remote.WorkspaceName, projectRoot, command)
+		task, err = r.tasks.StartRemoteWithObservationContext(ctx, envReq.RequestID, observationCallID(envReq), originTool, remote.ID, remote.WorkspaceName, remote.WorkspacePath, command)
 	}
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "start_error", err.Error())
-	}
-	if lease.ID != "" {
-		keepLease = true
-		r.keepWriterLease(lease, task.Done())
 	}
 	if planned != nil {
 		if _, err := r.state.DB().ExecContext(context.WithoutCancel(ctx), `UPDATE workspace_identity_transitions SET task_id=? WHERE run_id=? AND operation_id=? AND task_id=''`, task.ID, expected.RunID, planned.OperationID); err != nil {
@@ -351,15 +328,11 @@ func (r *Runtime) executeCommandTask(ctx context.Context, envReq envelope.Reques
 	data["command_digest"] = commandDigest
 	data["command_policy"] = commandPolicyData(analysis)
 	data["command"] = command
-	data["workspace_binding"] = workspaceBindingData(remote)
 	if argvSpec != nil {
 		data["argv"] = envReq.Payload["argv"]
 		data["shell"] = false
 	}
-	data["working_directory"] = projectRoot
-	if leaseData := writerLeaseData(lease); leaseData != nil {
-		data["writer_lease"] = leaseData
-	}
+	data["working_directory"] = remote.WorkspacePath
 	if expected != nil {
 		data["working_directory"] = workDir
 		data["workspace_pre_identity"] = expected
@@ -388,7 +361,6 @@ func (r *Runtime) executeCommandTask(ctx context.Context, envReq envelope.Reques
 		detail := commandExecutionDetail(purpose, scope, commandDigest, analysis)
 		detail["exit_code"] = data["exit_code"]
 		if code, message := annotateExecutionOutcome(data); code != "" {
-			addExecutionFailureReceipt(data, code, message, remote)
 			response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, data, code, message)
 			response.RemoteSessionID = remote.ID
 			return r.resultJSON(response)
@@ -746,8 +718,7 @@ func readonlySQLiteAnalysis(command string) security.CommandAnalysis {
 func (r *Runtime) executeSQLiteRuntime(ctx context.Context, envReq envelope.Request, remote remotesession.Session, spec *ephemeralRuntimeSpec, purpose, scope, commandDigest string, analysis security.CommandAnalysis) (*mcp.CallToolResult, error) {
 	queryCtx, cancel := context.WithTimeout(ctx, ephemeralRuntimeMaxWait)
 	defer cancel()
-	projectRoot := sessionProjectPath(remote)
-	result, err := sqlitequery.Query(queryCtx, projectRoot, spec.Database, spec.Script, sqlitequery.DefaultMaxRows, config.MaxResultBytes(r.cfg.Limits))
+	result, err := sqlitequery.Query(queryCtx, remote.WorkspacePath, spec.Database, spec.Script, sqlitequery.DefaultMaxRows, config.MaxResultBytes(r.cfg.Limits))
 	detail := runtimeExecutionDetail(purpose, scope, commandDigest, spec, analysis)
 	if err != nil {
 		detail["error"] = err.Error()
@@ -755,10 +726,8 @@ func (r *Runtime) executeSQLiteRuntime(ctx context.Context, envReq envelope.Requ
 		data := map[string]any{
 			"runtime": spec.Runtime, "database": spec.Database, "readonly": true,
 			"script_sha256": spec.ScriptSHA256, "script_bytes": spec.ScriptBytes,
-			"working_directory": projectRoot, "workspace_scoped": true,
-			"workspace_binding": workspaceBindingData(remote),
+			"working_directory": remote.WorkspacePath, "workspace_scoped": true,
 		}
-		addExecutionFailureReceipt(data, "SQLITE_QUERY_ERROR", err.Error(), remote)
 		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, data, "SQLITE_QUERY_ERROR", err.Error())
 		response.RemoteSessionID = remote.ID
 		return r.resultJSON(response)
@@ -768,8 +737,7 @@ func (r *Runtime) executeSQLiteRuntime(ctx context.Context, envReq envelope.Requ
 		"columns": result.Columns, "rows": result.Rows, "row_count": result.RowCount, "truncated": result.Truncated,
 		"script_sha256": spec.ScriptSHA256, "script_bytes": spec.ScriptBytes,
 		"purpose": purpose, "scope": scope, "command_digest": commandDigest,
-		"working_directory": projectRoot, "workspace_scoped": true, "completed_in_call": true,
-		"workspace_binding": workspaceBindingData(remote),
+		"working_directory": remote.WorkspacePath, "workspace_scoped": true, "completed_in_call": true,
 	}
 	detail["row_count"] = result.RowCount
 	detail["truncated"] = result.Truncated
@@ -782,21 +750,8 @@ func (r *Runtime) executeRuntimeTask(ctx context.Context, envReq envelope.Reques
 	if originTool == "" {
 		originTool = "execute"
 	}
-	lease, leaseErr := r.acquireWriterLease(ctx, remote, principal.ID)
-	if leaseErr != nil {
-		details, _ := writerLeaseError(leaseErr)
-		response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, details, "WORKSPACE_BUSY", leaseErr.Error())
-		response.RemoteSessionID = remote.ID
-		return r.resultJSON(response)
-	}
-	keepLease := false
-	defer func() {
-		if !keepLease {
-			r.releaseWriterLease(context.Background(), lease)
-		}
-	}()
 	task, err := r.tasks.StartRemoteProcessWithObservationContext(
-		envReq.RequestID, observationCallID(envReq), originTool, remote.ID, remote.WorkspaceName, sessionProjectPath(remote), spec.Command,
+		envReq.RequestID, observationCallID(envReq), originTool, remote.ID, remote.WorkspaceName, remote.WorkspacePath, spec.Command,
 		terminal.ProcessSpec{
 			Executable: spec.Executable, Args: spec.Args, Stdin: spec.Script,
 			WallLimit: ephemeralRuntimeWallLimit, CPUTimeLimit: ephemeralRuntimeCPUTimeLimit,
@@ -805,8 +760,6 @@ func (r *Runtime) executeRuntimeTask(ctx context.Context, envReq envelope.Reques
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "RUNTIME_START_ERROR", err.Error())
 	}
-	keepLease = true
-	r.keepWriterLease(lease, task.Done())
 	detail := runtimeExecutionDetail(purpose, scope, commandDigest, spec, analysis)
 	_ = r.remote.AddEvent(ctx, principal, remotesession.Event{
 		RemoteSessionID: remote.ID, Type: "command.started", OperationID: task.ID,
@@ -822,14 +775,10 @@ func (r *Runtime) executeRuntimeTask(ctx context.Context, envReq envelope.Reques
 	data["command_digest"] = commandDigest
 	data["command_policy"] = commandPolicyData(analysis)
 	data["command"] = spec.Command
-	data["workspace_binding"] = workspaceBindingData(remote)
 	data["runtime"] = spec.Runtime
 	data["script_sha256"] = spec.ScriptSHA256
 	data["script_bytes"] = spec.ScriptBytes
-	data["working_directory"] = sessionProjectPath(remote)
-	if leaseData := writerLeaseData(lease); leaseData != nil {
-		data["writer_lease"] = leaseData
-	}
+	data["working_directory"] = remote.WorkspacePath
 	data["workspace_scoped"] = true
 	data["wall_limit_ms"] = ephemeralRuntimeWallLimit.Milliseconds()
 	data["cpu_time_limit_ms"] = ephemeralRuntimeCPUTimeLimit.Milliseconds()
@@ -848,7 +797,6 @@ func (r *Runtime) executeRuntimeTask(ctx context.Context, envReq envelope.Reques
 			detail["limit_reason"] = reason
 		}
 		if code, message := annotateExecutionOutcome(data); code != "" {
-			addExecutionFailureReceipt(data, code, message, remote)
 			r.logAudit(audit.Event{RequestID: envReq.RequestID, RemoteSessionID: remote.ID, Workspace: remote.WorkspaceName, Tool: "execute", Command: spec.Command, Status: "error", Detail: detail})
 			response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, data, code, message)
 			response.RemoteSessionID = remote.ID
@@ -970,7 +918,7 @@ func (r *Runtime) toolTaskManage(ctx context.Context, req *mcp.CallToolRequest) 
 		}
 		digest := taskListDigest(items)
 		knownDigest := strings.TrimSpace(stringPayload(envReq.Payload, "known_task_digest"))
-		data := map[string]any{"task_list_digest": digest, "not_modified": knownDigest != "" && knownDigest == digest, "workspace_binding": workspaceBindingData(remote)}
+		data := map[string]any{"task_list_digest": digest, "not_modified": knownDigest != "" && knownDigest == digest}
 		if data["not_modified"] == true {
 			data["tasks"] = []map[string]any{}
 			data["message"] = "Task list unchanged; reuse the previously returned Task IDs."
@@ -994,11 +942,9 @@ func (r *Runtime) toolTaskManage(ctx context.Context, req *mcp.CallToolRequest) 
 	case "status":
 		data := task.StatusView()
 		annotateExecutionOutcome(data)
-		data["workspace_binding"] = workspaceBindingData(remote)
 		return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, data)
 	case "logs":
 		data := r.taskResultData(task, intPayload(envReq.Payload, "stdout_offset"), intPayload(envReq.Payload, "stderr_offset"))
-		data["workspace_binding"] = workspaceBindingData(remote)
 		if int64(data["stdout_next_offset"].(int)) < task.LogStreamSize("stdout") || int64(data["stderr_next_offset"].(int)) < task.LogStreamSize("stderr") {
 			nextTool := "task_manage"
 			if isCleanCoreRequest(ctx) {
@@ -1013,7 +959,6 @@ func (r *Runtime) toolTaskManage(ctx context.Context, req *mcp.CallToolRequest) 
 		task.Wait(waitCtx)
 		cancel()
 		data := r.taskResultData(task, intPayload(envReq.Payload, "stdout_offset"), intPayload(envReq.Payload, "stderr_offset"))
-		data["workspace_binding"] = workspaceBindingData(remote)
 		stdoutNext := data["stdout_next_offset"].(int)
 		stderrNext := data["stderr_next_offset"].(int)
 		if fmt.Sprint(task.StatusView()["status"]) == string(terminal.TaskRunning) || int64(stdoutNext) < task.LogStreamSize("stdout") || int64(stderrNext) < task.LogStreamSize("stderr") {
@@ -1024,7 +969,6 @@ func (r *Runtime) toolTaskManage(ctx context.Context, req *mcp.CallToolRequest) 
 			data["next_action"] = nextAction(nextTool, map[string]any{"remote_session_id": remote.ID, "action": "attach", "execution_task_id": task.ID, "stdout_offset": stdoutNext, "stderr_offset": stderrNext, "yield_time_ms": int(commandYield(envReq.Payload) / time.Millisecond)})
 		}
 		if code, message := annotateExecutionOutcome(data); code != "" {
-			addExecutionFailureReceipt(data, code, message, remote)
 			response := envelope.Fail(envelope.StatusError, envReq.RequestID, remote.WorkspaceName, data, code, message)
 			response.RemoteSessionID = remote.ID
 			return r.resultJSON(response)
@@ -1036,9 +980,7 @@ func (r *Runtime) toolTaskManage(ctx context.Context, req *mcp.CallToolRequest) 
 			return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "stop_error", err.Error())
 		}
 		_ = r.remote.AddEvent(ctx, principal, remotesession.Event{RemoteSessionID: remote.ID, Type: "task.stopped", OperationID: task.ID, Summary: task.Command})
-		data := task.StatusView()
-		data["workspace_binding"] = workspaceBindingData(remote)
-		return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, data)
+		return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, task.StatusView())
 	case "ports":
 		ports, err := terminal.ListeningPorts(ctx, task.PID)
 		if err != nil {
@@ -1114,22 +1056,6 @@ func annotateExecutionOutcome(data map[string]any) (code, message string) {
 	data["outcome"] = status
 	delete(data, "error_code")
 	return "", ""
-}
-
-func addExecutionFailureReceipt(data map[string]any, code, message string, session remotesession.Session) {
-	if data == nil || strings.TrimSpace(code) == "" {
-		return
-	}
-	receipt := map[string]any{
-		"code": code, "message": message, "retryable": false, "terminal": true,
-		"project_root": sessionProjectPath(session), "remote_session_id": session.ID,
-	}
-	for _, key := range []string{"execution_task_id", "exit_code", "limit_reason"} {
-		if value, ok := data[key]; ok {
-			receipt[key] = value
-		}
-	}
-	data["failure"] = receipt
 }
 
 func taskListDigest(items []map[string]any) string {

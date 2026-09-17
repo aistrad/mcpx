@@ -735,7 +735,6 @@ func TestA01A02A03A07A10A13ViaMCPProtocol(t *testing.T) {
 		"action":            "search",
 		"remote_session_id": remoteID,
 		"query":             "Alpha",
-		"paths":             []any{"."},
 		"context_before":    1,
 		"context_after":     1,
 	})

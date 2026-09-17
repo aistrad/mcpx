@@ -273,15 +273,6 @@ func (r *Runtime) validateOperationToolArguments(toolName string, arguments map[
 	merged := cloneArguments(arguments)
 	merged["remote_session_id"] = sessionID
 	merged["purpose"] = purpose
-	if toolName == "read" {
-		view, _ := merged["view"].(string)
-		if strings.TrimSpace(view) == "" {
-			view = inferReadView(merged)
-		}
-		if err := validateReadViewArguments(mcpresult.Request(merged), strings.ToLower(strings.TrimSpace(view))); err != nil {
-			return err
-		}
-	}
 	return validateOperationSchemaValue(merged, schema, "arguments")
 }
 
@@ -313,9 +304,6 @@ func (r *Runtime) operationResponse(envReq envelope.Request, session remotesessi
 
 func (r *Runtime) operationBatchManageResponse(ctx context.Context, envReq envelope.Request, session remotesession.Session, action string, records []operation.Record) (*mcp.CallToolResult, error) {
 	items := make([]map[string]any, len(records))
-	failedIDs := make([]string, 0)
-	successfulIDs := make([]string, 0)
-	resultErrors := 0
 	switch action {
 	case "status":
 		for index, record := range records {
@@ -332,17 +320,7 @@ func (r *Runtime) operationBatchManageResponse(ctx context.Context, envReq envel
 		for index, record := range records {
 			page, err := r.operations.Result(ctx, record.ID, "", "", limit)
 			if err != nil {
-				// Keep the other operation results visible. A single expired or
-				// unavailable result must not make a successful sibling look like
-				// a batch-wide read failure.
-				resultErrors++
-				items[index] = map[string]any{
-					"operation_id": record.ID,
-					"state":        record.State,
-					"error":        map[string]any{"message": err.Error()},
-				}
-				failedIDs = append(failedIDs, record.ID)
-				continue
+				return r.operationError(envReq, session, err)
 			}
 			records[index] = page.Operation
 			items[index] = operationResultView(page)
@@ -350,32 +328,8 @@ func (r *Runtime) operationBatchManageResponse(ctx context.Context, envReq envel
 	default:
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "bad_request", fmt.Sprintf("unsupported batch operation action %q", action))
 	}
-	for _, record := range records {
-		switch record.State {
-		case operation.StateSucceeded:
-			if !containsString(failedIDs, record.ID) {
-				successfulIDs = append(successfulIDs, record.ID)
-			}
-		case operation.StateFailed, operation.StateInterrupted, operation.StateCancelled:
-			if !containsString(failedIDs, record.ID) {
-				failedIDs = append(failedIDs, record.ID)
-			}
-		}
-	}
 	data := map[string]any{"action": action, "items": items}
-	if len(successfulIDs) > 0 {
-		data["successful_operation_ids"] = successfulIDs
-	}
-	if len(failedIDs) > 0 {
-		data["failed_operation_ids"] = failedIDs
-	}
-	if resultErrors > 0 {
-		data["partial"] = true
-	}
 	status := operationBatchStatus(records)
-	if resultErrors > 0 {
-		status = envelope.StatusError
-	}
 	var response envelope.Response
 	switch status {
 	case envelope.StatusAccepted:
@@ -448,16 +402,8 @@ func operationView(record operation.Record, includeResults bool) map[string]any 
 		data["terminal_event_id"] = record.StateEventID
 	}
 	steps := make([]map[string]any, 0, len(record.Steps))
-	successfulStepIDs := make([]string, 0)
-	failedStepIDs := make([]string, 0)
 	for _, step := range record.Steps {
 		view := map[string]any{"id": step.ID, "tool": step.Tool, "state": step.State, "depends_on": step.DependsOn}
-		switch step.State {
-		case operation.StateSucceeded:
-			successfulStepIDs = append(successfulStepIDs, step.ID)
-		case operation.StateFailed, operation.StateInterrupted, operation.StateCancelled:
-			failedStepIDs = append(failedStepIDs, step.ID)
-		}
 		if step.ConfirmationToken != "" {
 			view["confirmation_token"] = step.ConfirmationToken
 		}
@@ -468,12 +414,6 @@ func operationView(record operation.Record, includeResults bool) map[string]any 
 		steps = append(steps, view)
 	}
 	data["steps"] = steps
-	if len(successfulStepIDs) > 0 {
-		data["successful_step_ids"] = successfulStepIDs
-	}
-	if len(failedStepIDs) > 0 {
-		data["failed_step_ids"] = failedStepIDs
-	}
 	data["stats"] = operationStats(record)
 	if record.State == operation.StateQueued || record.State == operation.StateRunning {
 		data["next_action"] = nextActionWithReason("operation_manage", "操作仍在执行；使用一次 wait 等待结果，不要重复轮询 status", map[string]any{
@@ -791,6 +731,14 @@ func validateOperationSchemaValue(value any, schema map[string]any, path string)
 			return fmt.Errorf("%s must be an object", path)
 		}
 		properties, _ := schema["properties"].(map[string]any)
+		if required, ok := schema["required"].([]any); ok {
+			for _, raw := range required {
+				key, _ := raw.(string)
+				if _, exists := object[key]; !exists {
+					return fmt.Errorf("missing required field %q", key)
+				}
+			}
+		}
 		for key, item := range object {
 			rawSchema, known := properties[key].(map[string]any)
 			if !known {
@@ -804,14 +752,6 @@ func validateOperationSchemaValue(value any, schema map[string]any, path string)
 			}
 			if err := validateOperationSchemaValue(item, rawSchema, path+"."+key); err != nil {
 				return err
-			}
-		}
-		if required, ok := schema["required"].([]any); ok {
-			for _, raw := range required {
-				key, _ := raw.(string)
-				if _, exists := object[key]; !exists {
-					return fmt.Errorf("missing required field %q", key)
-				}
 			}
 		}
 	case "array":
@@ -843,12 +783,10 @@ func validateOperationSchemaValue(value any, schema map[string]any, path string)
 	return nil
 }
 
-func isOperationInjectedField(key string, allowOperationConfirmation ...bool) bool {
+func isOperationInjectedField(key string) bool {
 	switch key {
 	case "session_id", "remote_session_id", "goal", "purpose", "intent", "progress_summary", "execution_mode":
 		return true
-	case "confirmation_token":
-		return len(allowOperationConfirmation) > 0 && allowOperationConfirmation[0]
 	default:
 		return false
 	}

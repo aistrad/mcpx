@@ -32,12 +32,11 @@ func NewRegistry(entries []config.WorkspaceEntry) (*Registry, error) {
 			return nil, fmt.Errorf("workspace %q has unsupported approval_mode %q", e.Name, e.ApprovalMode)
 		}
 		ws := Workspace{
-			ID:                  e.Name,
-			Name:                e.Name,
-			Path:                abs,
-			Description:         e.Description,
-			ApprovalMode:        approvalMode,
-			ProjectRootRequired: e.ProjectRootRequired,
+			ID:           e.Name,
+			Name:         e.Name,
+			Path:         abs,
+			Description:  e.Description,
+			ApprovalMode: approvalMode,
 		}
 		r.byName[e.Name] = ws
 		r.order = append(r.order, e.Name)

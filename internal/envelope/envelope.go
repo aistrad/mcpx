@@ -306,8 +306,6 @@ func classifyError(status Status, code string) (category string, retryable bool,
 		return "execution", false, "Inspect exit_code, stdout and stderr; correct the command or its inputs before retrying."
 	case "OPERATION_FAILED":
 		return "execution", false, "Inspect the failed operation step and its result before deciding whether to retry."
-	case "WORKSPACE_BUSY":
-		return "conflict", true, "Inspect the existing writer Task or Session, then retry after the project root is released."
 	}
 	if strings.Contains(code, "NOT_FOUND") || strings.Contains(code, "WORKSPACE_NOT_FOUND") {
 		return "not_found", false, "Check the identifier and refresh the relevant list."

@@ -181,9 +181,6 @@ func merge(global, project Config, mergeAuth bool) Config {
 	if project.Transport.SessionIdleTTL != "" {
 		out.Transport.SessionIdleTTL = project.Transport.SessionIdleTTL
 	}
-	if project.Transport.WriterLeaseTTL != "" {
-		out.Transport.WriterLeaseTTL = project.Transport.WriterLeaseTTL
-	}
 	if project.Limits.MaxResultBytes != 0 {
 		out.Limits.MaxResultBytes = project.Limits.MaxResultBytes
 	}

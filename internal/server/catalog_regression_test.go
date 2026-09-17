@@ -126,7 +126,7 @@ func TestReadOnlyToolAnnotationsAndSessionOpenDefaults(t *testing.T) {
 		}
 		editCapabilityFound = true
 		safety, _ := item["safety"].(map[string]any)
-		if safety["approval"] == "host_user_approval_required" || safety["scope"] != "session_project_root" || safety["project_root_bound"] != true {
+		if safety["approval"] == "host_user_approval_required" || safety["scope"] != "registered_workspace_root" {
 			t.Fatalf("runtime_read must publish edit safety metadata: %+v", item)
 		}
 	}

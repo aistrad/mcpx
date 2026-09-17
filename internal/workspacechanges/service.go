@@ -44,7 +44,6 @@ type GitRoot struct {
 type Report struct {
 	RemoteSessionID string    `json:"remote_session_id"`
 	Workspace       string    `json:"workspace"`
-	ProjectRoot     string    `json:"project_root"`
 	GitAvailable    bool      `json:"git_available"`
 	GitHead         string    `json:"git_head,omitempty"`
 	GitRoots        []GitRoot `json:"git_roots,omitempty"`
@@ -134,7 +133,6 @@ func (s *Service) Inspect(ctx context.Context, remoteSessionID, workspaceName, w
 		return Report{
 			RemoteSessionID: remoteSessionID,
 			Workspace:       workspaceName,
-			ProjectRoot:     workspaceRoot,
 			GitAvailable:    false,
 			Entries:         []Entry{},
 			InspectedAt:     s.now().UTC(),
@@ -170,7 +168,7 @@ func (s *Service) Inspect(ctx context.Context, remoteSessionID, workspaceName, w
 			entry.Attribution = "external"
 		}
 	}
-	report := Report{RemoteSessionID: remoteSessionID, Workspace: workspaceName, ProjectRoot: workspaceRoot, GitAvailable: true, GitHead: head, GitRoots: gitRoots, BaselineHead: baselineHead, Entries: entries, InspectedAt: s.now().UTC()}
+	report := Report{RemoteSessionID: remoteSessionID, Workspace: workspaceName, GitAvailable: true, GitHead: head, GitRoots: gitRoots, BaselineHead: baselineHead, Entries: entries, InspectedAt: s.now().UTC()}
 	if includeDiff {
 		var parts []string
 		diffRoots, _ := DiscoverGitRoots(workspaceRoot)

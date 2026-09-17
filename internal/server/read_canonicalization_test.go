@@ -98,7 +98,7 @@ func TestReadSearchAndContextReturnRevisionByDefault(t *testing.T) {
 	remoteID := opened["remote_session_id"].(string)
 
 	search := callEnvelope(t, rt.toolRead, context.Background(), map[string]any{
-		"remote_session_id": remoteID, "query": "needle", "paths": []any{"."},
+		"remote_session_id": remoteID, "query": "needle",
 	})
 	searchData := search["data"].(map[string]any)
 	matches := searchData["matches"].([]any)

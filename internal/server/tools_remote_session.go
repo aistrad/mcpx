@@ -148,22 +148,19 @@ func (r *Runtime) remoteError(envReq envelope.Request, remoteSessionID, workspac
 	return r.resultJSON(resp)
 }
 
-func (r *Runtime) createRemoteSession(ctx context.Context, principal auth.Principal, envReq envelope.Request, workspaceName, projectPath string) (remotesession.CreateResult, error) {
+func (r *Runtime) createRemoteSession(ctx context.Context, principal auth.Principal, envReq envelope.Request, workspaceName string) (remotesession.CreateResult, error) {
 	workspaceName = strings.TrimSpace(workspaceName)
 	ws, ok := r.reg.Get(workspaceName)
 	if !ok {
 		return remotesession.CreateResult{}, fmt.Errorf("%w: %q", errWorkspaceNotFound, workspaceName)
 	}
-	if strings.TrimSpace(projectPath) == "" {
-		projectPath = ws.Path
-	}
 	label, _ := envReq.Payload["label"].(string)
 	description, _ := envReq.Payload["description"].(string)
 	clientRequestID, _ := envReq.Payload["client_request_id"].(string)
 	clientName, clientVersion := clientInfoFromContext(ctx)
-	gitHead, treeDigest := workspaceRevision(ctx, projectPath)
+	gitHead, treeDigest := workspaceRevision(ctx, ws.Path)
 	result, err := r.remote.Create(ctx, principal, remotesession.CreateInput{
-		WorkspaceName: workspaceName, WorkspacePath: ws.Path, ProjectPath: projectPath, Label: label,
+		WorkspaceName: workspaceName, WorkspacePath: ws.Path, Label: label,
 		Description: description, BaseGitHead: gitHead, BaseTreeDigest: treeDigest,
 		ClientRequestID: clientRequestID, ClientName: clientName, ClientVersion: clientVersion,
 	})
@@ -176,7 +173,7 @@ func (r *Runtime) createRemoteSession(ctx context.Context, principal auth.Princi
 	if result.ResumeTokenAlreadyIssued {
 		return result, nil
 	}
-	if err := r.workspaceDiff.CaptureBaseline(ctx, result.Session.ID, sessionProjectPath(result.Session)); err != nil {
+	if err := r.workspaceDiff.CaptureBaseline(ctx, result.Session.ID, result.Session.WorkspacePath); err != nil {
 		r.logAudit(audit.Event{RequestID: envReq.RequestID, RemoteSessionID: result.Session.ID, Workspace: workspaceName, Tool: "workspace_baseline", Status: "error", Detail: map[string]any{"error": err.Error()}})
 	}
 	return result, nil
@@ -231,7 +228,6 @@ func (r *Runtime) toolRemoteSessionClose(ctx context.Context, req *mcp.CallToolR
 	if err != nil {
 		return r.remoteError(envReq, remoteSessionID, "", err)
 	}
-	r.releaseWriterLeaseForSession(context.Background(), session.ID)
 	r.discoveryMu.Lock()
 	for id, observed := range r.discoveries {
 		if observed.RemoteSessionID == remoteSessionID {
