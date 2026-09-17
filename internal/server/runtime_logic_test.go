@@ -159,7 +159,7 @@ func TestExternalManualAutoContinueOnlyCoversBoundedExecution(t *testing.T) {
 		ApprovalMode: config.WorkspaceApprovalModeExternalManualAutoContinue,
 	}}
 	cfg.Security.Commands = config.CommandRules{
-		Default: "deny",
+		Default: "allow",
 		Confirm: []string{`^python3 -$`, `^echo\b`, `^git push`},
 	}
 	cfg.Logging.Dir = filepath.Join(home, "logs")

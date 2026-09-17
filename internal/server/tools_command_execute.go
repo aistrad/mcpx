@@ -101,8 +101,15 @@ func (r *Runtime) toolCommandExecute(ctx context.Context, req *mcp.CallToolReque
 		}
 		analysis = readonlySQLiteAnalysis(command)
 	}
-	autoContinue := r.externalManualAutoContinue(remote.WorkspaceName) &&
-		autoConfirmableExternalManualExecution(envReq.Payload, runtimeSpec, argvSpec)
+	autoManual := r.externalManualAutoContinue(remote.WorkspaceName)
+	autoConfirmable := autoConfirmableExternalManualExecution(envReq.Payload, runtimeSpec, argvSpec)
+	if autoManual && !autoConfirmable && analysis.Decision == security.Allow {
+		// The normal global config may use default=allow. External manual mode
+		// must still keep arbitrary shell/task and dangerous argv behind the
+		// existing semantic confirmation gate.
+		analysis.Decision = security.Confirm
+	}
+	autoContinue := autoManual && autoConfirmable
 	decision := analysis.Decision
 	yieldForRequest := commandYield(envReq.Payload)
 	if runtimeSpec != nil {
