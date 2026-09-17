@@ -33,6 +33,7 @@ func (r *Runtime) toolFileReadUnified(ctx context.Context, req *mcp.CallToolRequ
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(session)
 	mode := sourceReadMode(envReq.Payload)
 	if mode != "window" && mode != "full" {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, fmt.Errorf("unsupported read mode %q", mode))
@@ -65,12 +66,12 @@ func (r *Runtime) toolFileReadUnified(ctx context.Context, req *mcp.CallToolRequ
 			}
 			items = append(items, source.BatchReadRequest{Path: path, Offset: intPayload(item, "offset"), Limit: intPayload(item, "limit")})
 		}
-		effective := r.effectiveConfig(session.WorkspacePath)
+		effective := r.effectiveConfig(projectRoot)
 		budget := intPayload(envReq.Payload, "max_total_bytes")
 		if budget <= 0 {
 			budget = config.MaxResultBytes(effective.Limits)
 		}
-		batch := source.ReadBatch(session.WorkspacePath, items, effective.Security.Files.MaxReadBytes, budget, r.sourcePathAllowed(session.WorkspacePath))
+		batch := source.ReadBatch(projectRoot, items, effective.Security.Files.MaxReadBytes, budget, r.sourcePathAllowed(projectRoot))
 		results := make([]map[string]any, 0, len(batch.Results))
 		for _, item := range batch.Results {
 			entry := map[string]any{
@@ -107,6 +108,7 @@ func (r *Runtime) toolFileReadUnified(ctx context.Context, req *mcp.CallToolRequ
 		}
 		data := map[string]any{
 			"results": results, "total_bytes": batch.TotalBytes, "budget_bytes": batch.BudgetBytes, "truncated": batch.Truncated,
+			"workspace_binding": workspaceBindingData(session),
 		}
 		if batch.Truncated {
 			data["continue_from"] = batch.ContinueFrom
@@ -127,14 +129,14 @@ func (r *Runtime) toolFileReadUnified(ctx context.Context, req *mcp.CallToolRequ
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, fmt.Errorf("path or items is required"))
 	}
 	if mode == "full" {
-		return r.toolFileReadFull(envReq, session.ID, session.WorkspaceName, session.WorkspacePath, path)
+		return r.toolFileReadFull(envReq, session.ID, session.WorkspaceName, projectRoot, path)
 	}
-	if security.MatchFile(r.effectiveConfig(session.WorkspacePath).Security.Files, path) != security.Allow {
+	if security.MatchFile(r.effectiveConfig(projectRoot).Security.Files, path) != security.Allow {
 		response := envelope.Fail(envelope.StatusDenied, envReq.RequestID, session.WorkspaceName, map[string]any{"path": path}, "FILE_DENIED", "file denied by policy")
 		response.RemoteSessionID = session.ID
 		return r.resultJSON(response)
 	}
-	read, err := source.Read(session.WorkspacePath, path, intPayload(envReq.Payload, "offset"), intPayload(envReq.Payload, "limit"), r.effectiveConfig(session.WorkspacePath).Security.Files.MaxReadBytes)
+	read, err := source.Read(projectRoot, path, intPayload(envReq.Payload, "offset"), intPayload(envReq.Payload, "limit"), r.effectiveConfig(projectRoot).Security.Files.MaxReadBytes)
 	if err != nil {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, err)
 	}
@@ -142,6 +144,7 @@ func (r *Runtime) toolFileReadUnified(ctx context.Context, req *mcp.CallToolRequ
 		"path": read.Path, "content": read.Content, "sha256": read.SHA256, "line_ending": read.LineEnding,
 		"format": formatMap(read.Format),
 		"offset": read.Offset, "limit": read.Limit, "total_lines": read.TotalLines, "truncated": read.Truncated,
+		"workspace_binding": workspaceBindingData(session),
 	}
 	if read.Truncated {
 		data["next_action"] = nextAction("read", map[string]any{"remote_session_id": session.ID, "path": path, "offset": read.Offset + read.Limit, "limit": read.Limit})
@@ -189,7 +192,8 @@ func (r *Runtime) toolFileReadMixedBatch(_ context.Context, envReq envelope.Requ
 	if len(raw) > MaxReadItems {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, &source.LimitError{Resource: "read.items", Actual: len(raw), Max: MaxReadItems})
 	}
-	effective := r.effectiveConfig(session.WorkspacePath)
+	projectRoot := sessionProjectPath(session)
+	effective := r.effectiveConfig(projectRoot)
 	budget := intPayload(envReq.Payload, "max_total_bytes")
 	if budget <= 0 {
 		budget = config.MaxResultBytes(effective.Limits)
@@ -234,7 +238,7 @@ func (r *Runtime) toolFileReadMixedBatch(_ context.Context, envReq envelope.Requ
 			continue
 		}
 		if itemMode == "full" {
-			read, err := file.ReadFull(file.FullReadOptions{WorkspaceRoot: session.WorkspacePath, Path: path, MaxBytes: file.MaxSourceBytes})
+			read, err := file.ReadFull(file.FullReadOptions{WorkspaceRoot: projectRoot, Path: path, MaxBytes: file.MaxSourceBytes})
 			if err != nil {
 				results = append(results, map[string]any{
 					"path": path, "ok": false,
@@ -261,7 +265,7 @@ func (r *Runtime) toolFileReadMixedBatch(_ context.Context, envReq envelope.Requ
 		if maxBytes <= 0 || maxBytes > int64(remaining) {
 			maxBytes = int64(remaining)
 		}
-		read, err := source.Read(session.WorkspacePath, path, intPayload(item, "offset"), intPayload(item, "limit"), maxBytes)
+		read, err := source.Read(projectRoot, path, intPayload(item, "offset"), intPayload(item, "limit"), maxBytes)
 		if err != nil {
 			results = append(results, map[string]any{
 				"path": path, "ok": false,
@@ -283,6 +287,7 @@ func (r *Runtime) toolFileReadMixedBatch(_ context.Context, envReq envelope.Requ
 	}
 	data := map[string]any{
 		"results": results, "total_bytes": used, "budget_bytes": budget, "truncated": truncated,
+		"workspace_binding": workspaceBindingData(session),
 	}
 	return compactToolResult(data, sourceReadDisplay(data, fmt.Sprintf("Read %d source item(s); %d bytes returned.", len(results), used))), nil
 }
@@ -516,6 +521,7 @@ func (r *Runtime) toolContextQueryAction(ctx context.Context, req *mcp.CallToolR
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(session)
 	query, _ := envReq.Payload["query"].(string)
 	if strings.TrimSpace(query) == "" {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, fmt.Errorf("query is required"))
@@ -532,12 +538,12 @@ func (r *Runtime) toolContextQueryAction(ctx context.Context, req *mcp.CallToolR
 	seeds := sourcePayloadPaths(envReq.Payload)
 	include, _ := envReq.Payload["include_glob"].(string)
 	exclude, _ := envReq.Payload["exclude_glob"].(string)
-	allowed := r.sourcePathAllowedWithGlobs(session.WorkspacePath, include, exclude)
-	maxBytes := r.effectiveConfig(session.WorkspacePath).Security.Files.MaxReadBytes
+	allowed := r.sourcePathAllowedWithGlobs(projectRoot, include, exclude)
+	maxBytes := r.effectiveConfig(projectRoot).Security.Files.MaxReadBytes
 	if requested := intPayload(envReq.Payload, "max_bytes_per_file"); requested > 0 && int64(requested) < maxBytes {
 		maxBytes = int64(requested)
 	}
-	data, err := source.SmartQueryPage(session.WorkspacePath, source.SmartQueryOptions{
+	data, err := source.SmartQueryPage(projectRoot, source.SmartQueryOptions{
 		Query: query, Mode: mode, Parallel: parallel, MaxResults: maxResults,
 		Cursor: sourcePayloadString(envReq.Payload, "cursor"), Pattern: include, ExcludePattern: exclude,
 		ContextBefore: intPayload(envReq.Payload, "context_before"), ContextAfter: intPayload(envReq.Payload, "context_after"),
@@ -551,7 +557,7 @@ func (r *Runtime) toolContextQueryAction(ctx context.Context, req *mcp.CallToolR
 		if len(seeds) > 0 {
 			anchor = seeds[0]
 		}
-		docs := instruction.DiscoverAt(r.cfg.Discovery.Instructions.GlobalAgentsPath, session.WorkspacePath, anchor, r.effectiveConfig(session.WorkspacePath).Security.Files.MaxReadBytes)
+		docs := instruction.DiscoverAt(r.cfg.Discovery.Instructions.GlobalAgentsPath, projectRoot, anchor, r.effectiveConfig(projectRoot).Security.Files.MaxReadBytes)
 		data["instructions"] = docs
 	}
 	if truncated, _ := data["truncated"].(bool); truncated {
@@ -564,6 +570,7 @@ func (r *Runtime) toolContextQueryAction(ctx context.Context, req *mcp.CallToolR
 		})
 	}
 	files, _ := data["files"].([]map[string]any)
+	data["workspace_binding"] = workspaceBindingData(session)
 	return compactToolResult(data, fmt.Sprintf("Context query returned %d file(s).", len(files))), nil
 }
 
@@ -572,6 +579,7 @@ func (r *Runtime) toolContextSearchAction(ctx context.Context, req *mcp.CallTool
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(session)
 	query, _ := envReq.Payload["query"].(string)
 	pattern, _ := envReq.Payload["include_glob"].(string)
 	regex, _ := envReq.Payload["regex"].(bool)
@@ -580,14 +588,15 @@ func (r *Runtime) toolContextSearchAction(ctx context.Context, req *mcp.CallTool
 		caseSensitive = true // retain existing source search behaviour by default.
 	}
 	seeds := sourcePayloadPaths(envReq.Payload)
-	resultData, err := source.SearchWith(session.WorkspacePath, source.SearchOptions{
+	resultData, err := source.SearchWith(projectRoot, source.SearchOptions{
 		Query: query, Pattern: pattern, ExcludePattern: sourcePayloadString(envReq.Payload, "exclude_glob"), ScopePaths: seeds, Cursor: sourcePayloadString(envReq.Payload, "cursor"), Regex: regex,
 		CaseSensitive: caseSensitive, Limit: intPayload(envReq.Payload, "limit"), ContextBefore: intPayload(envReq.Payload, "context_before"), ContextAfter: intPayload(envReq.Payload, "context_after"), IncludeSHA256: true,
-	}, r.sourcePathAllowed(session.WorkspacePath))
+	}, r.sourcePathAllowed(projectRoot))
 	if err != nil {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, err)
 	}
 	data := map[string]any{"matches": resultData.Matches, "truncated": resultData.Truncated}
+	data["workspace_binding"] = workspaceBindingData(session)
 	if resultData.NextCursor != "" {
 		data["next_cursor"] = resultData.NextCursor
 		data["next_action"] = nextAction("context_query", map[string]any{
@@ -619,9 +628,10 @@ func (r *Runtime) toolContextListAction(ctx context.Context, req *mcp.CallToolRe
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(session)
 	pattern := sourcePayloadString(envReq.Payload, "include_glob")
-	baseAllowed := r.sourcePathAllowed(session.WorkspacePath)
-	scopeAllowed, err := hardListScope(session.WorkspacePath, sourcePayloadString(envReq.Payload, "path"))
+	baseAllowed := r.sourcePathAllowed(projectRoot)
+	scopeAllowed, err := hardListScope(projectRoot, sourcePayloadString(envReq.Payload, "path"))
 	if err != nil {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, err)
 	}
@@ -633,11 +643,11 @@ func (r *Runtime) toolContextListAction(ctx context.Context, req *mcp.CallToolRe
 	if directLimit <= 0 || directLimit > source.MaxDirectListEntries {
 		directLimit = source.DefaultDirectListEntries
 	}
-	direct, err := source.ListDirect(session.WorkspacePath, sourcePayloadString(envReq.Payload, "path"), sourcePayloadString(envReq.Payload, "entries_cursor"), directLimit, allowed)
+	direct, err := source.ListDirect(projectRoot, sourcePayloadString(envReq.Payload, "path"), sourcePayloadString(envReq.Payload, "entries_cursor"), directLimit, allowed)
 	if err != nil {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, err)
 	}
-	list, err := source.ListWith(session.WorkspacePath, pattern, sourcePayloadString(envReq.Payload, "exclude_glob"), sourcePayloadString(envReq.Payload, "cursor"), intPayload(envReq.Payload, "limit"), false, allowed)
+	list, err := source.ListWith(projectRoot, pattern, sourcePayloadString(envReq.Payload, "exclude_glob"), sourcePayloadString(envReq.Payload, "cursor"), intPayload(envReq.Payload, "limit"), false, allowed)
 	if err != nil {
 		return r.sourceError(envReq, session.ID, session.WorkspaceName, err)
 	}
@@ -654,6 +664,7 @@ func (r *Runtime) toolContextListAction(ctx context.Context, req *mcp.CallToolRe
 		"entries_policy_filtered": direct.PolicyFiltered,
 		"files":                   list.Files,
 		"total":                   list.Total,
+		"workspace_binding":       workspaceBindingData(session),
 	}
 	if list.NextCursor != "" {
 		data["next_cursor"] = list.NextCursor

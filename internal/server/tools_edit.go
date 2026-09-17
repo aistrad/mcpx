@@ -48,6 +48,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(session)
 
 	edits, err := parseCleanEdits(envReq.Payload)
 	if err != nil {
@@ -64,8 +65,8 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 			})
 		}
 	}
-	effective := r.effectiveConfig(session.WorkspacePath)
-	physicalRoot, err := file.Resolve(session.WorkspacePath, ".")
+	effective := r.effectiveConfig(projectRoot)
+	physicalRoot, err := file.Resolve(projectRoot, ".")
 	if err != nil {
 		return r.editToolError(envReq, session, err)
 	}
@@ -100,7 +101,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		apply = value
 	}
 	if !apply {
-		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: session.WorkspacePath, Edits: edits, DryRun: true, ValidatePath: validatePath})
+		result, dryRunErr := edit.ApplyBatch(edit.BatchRequest{WorkspaceRoot: projectRoot, Edits: edits, DryRun: true, ValidatePath: validatePath})
 		if dryRunErr != nil {
 			return r.editToolError(envReq, session, dryRunErr)
 		}
@@ -111,6 +112,14 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		data["remote_session_id"] = session.ID
 		return r.remoteResult(envReq, session.ID, session.WorkspaceName, data)
 	}
+	lease, leaseErr := r.acquireWriterLease(ctx, session, principal.ID)
+	if leaseErr != nil {
+		details, _ := writerLeaseError(leaseErr)
+		response := envelope.Fail(envelope.StatusError, envReq.RequestID, session.WorkspaceName, details, "WORKSPACE_BUSY", leaseErr.Error())
+		response.RemoteSessionID = session.ID
+		return r.resultJSON(response)
+	}
+	defer r.releaseWriterLease(context.Background(), lease)
 	var idemKey idempotency.Key
 	var claim idempotency.Claim
 	claimed := idempotencyKey != "" && r.idempotency != nil
@@ -151,7 +160,7 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	preparedPersisted := false
 	var preparedResult edit.BatchResult
 	result, err := edit.ApplyBatchWithHook(edit.BatchRequest{
-		WorkspaceRoot: session.WorkspacePath,
+		WorkspaceRoot: projectRoot,
 		Edits:         edits,
 		ValidatePath:  validatePath,
 	}, func(prepared edit.BatchResult) error {
@@ -216,12 +225,16 @@ func (r *Runtime) toolEdit(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 		Tool: "edit", Status: "ok",
 		Detail: map[string]any{"files": len(result.Results), "deleted_files": 0, "total_changed_lines": result.TotalChangedLines},
 	})
-	return r.editToolSuccess(envReq, session, editID, result, false)
+	return r.editToolSuccess(envReq, session, editID, result, false, writerLeaseData(lease))
 }
 
-func (r *Runtime) editToolSuccess(envReq envelope.Request, session remotesession.Session, editID string, result edit.BatchResult, replay bool) (*mcp.CallToolResult, error) {
+func (r *Runtime) editToolSuccess(envReq envelope.Request, session remotesession.Session, editID string, result edit.BatchResult, replay bool, lease map[string]any) (*mcp.CallToolResult, error) {
 	data := editResponseData(session.ID, editID, result, replay)
 	data["remote_session_id"] = session.ID
+	data["workspace_binding"] = workspaceBindingData(session)
+	if lease != nil {
+		data["writer_lease"] = lease
+	}
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, data)
 }
 

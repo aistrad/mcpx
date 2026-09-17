@@ -19,29 +19,37 @@ func (r *Runtime) toolArtifactRegister(ctx context.Context, req *mcp.CallToolReq
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(remote)
 	path, _ := envReq.Payload["path"].(string)
-	if security.MatchFile(r.effectiveConfig(remote.WorkspacePath).Security.Files, path) != security.Allow {
+	if security.MatchFile(r.effectiveConfig(projectRoot).Security.Files, path) != security.Allow {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "denied", "artifact path denied by file policy")
 	}
 	name, _ := envReq.Payload["name"].(string)
 	kind, _ := envReq.Payload["kind"].(string)
 	mimeType, _ := envReq.Payload["mime_type"].(string)
+	includeResourceLink, _ := envReq.Payload["include_resource_link"].(bool)
 	if kind != "" && !validArtifactKind(kind) {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "invalid_kind", "unsupported artifact kind")
 	}
-	registered, err := r.artifacts.Register(ctx, remote.ID, principal.ID, remote.WorkspacePath, path, name, kind, mimeType)
+	registered, err := r.artifacts.Register(ctx, remote.ID, principal.ID, projectRoot, path, name, kind, mimeType)
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "artifact_register_error", err.Error())
 	}
 	_ = r.remote.AddEvent(ctx, principal, remotesession.Event{RemoteSessionID: remote.ID, Type: "artifact.registered", OperationID: registered.ID, Summary: registered.Name, ResourceURI: registered.ResourceURI})
-	result, err := r.remoteResult(envReq, remote.ID, remote.WorkspaceName, registered)
+	artifactData := structMap(registered)
+	artifactData["workspace_binding"] = workspaceBindingData(remote)
+	result, err := r.remoteResult(envReq, remote.ID, remote.WorkspaceName, artifactData)
 	if err != nil {
 		return result, err
 	}
-	// Append resource link for hosts; keep wire structuredContent from remoteResult.
-	link := mcpresult.NewResourceLink(registered.ResourceURI, registered.Name, "Registered MCPX development artifact", artifact.DeliveryMIME(registered.MIMEType, registered.SourceEncoding))
-	link.Size = &registered.Size
-	result.Content = append(result.Content, link)
+	// Resource links are opt-in. Returning one asks the host to materialize a
+	// file attachment; routine artifact registration should stay structured and
+	// use artifact.read/resource pagination instead.
+	if includeResourceLink {
+		link := mcpresult.NewResourceLink(registered.ResourceURI, registered.Name, "Registered MCPX development artifact", artifact.DeliveryMIME(registered.MIMEType, registered.SourceEncoding))
+		link.Size = &registered.Size
+		result.Content = append(result.Content, link)
+	}
 	return result, nil
 }
 
@@ -55,7 +63,7 @@ func (r *Runtime) toolArtifactList(ctx context.Context, req *mcp.CallToolRequest
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "artifact_list_error", err.Error())
 	}
-	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, map[string]any{"artifacts": items})
+	return r.remoteResult(envReq, remote.ID, remote.WorkspaceName, map[string]any{"artifacts": items, "workspace_binding": workspaceBindingData(remote)})
 }
 
 func (r *Runtime) toolArtifactRead(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
@@ -63,8 +71,9 @@ func (r *Runtime) toolArtifactRead(ctx context.Context, req *mcp.CallToolRequest
 	if fail != nil {
 		return fail, nil
 	}
+	projectRoot := sessionProjectPath(remote)
 	artifactID, _ := envReq.Payload["artifact_id"].(string)
-	read, err := r.artifacts.Read(ctx, remote.ID, artifactID, remote.WorkspacePath, int64(intPayload(envReq.Payload, "offset")), intPayload(envReq.Payload, "limit"))
+	read, err := r.artifacts.Read(ctx, remote.ID, artifactID, projectRoot, int64(intPayload(envReq.Payload, "offset")), intPayload(envReq.Payload, "limit"))
 	if err != nil {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "artifact_read_error", err.Error())
 	}
@@ -74,6 +83,7 @@ func (r *Runtime) toolArtifactRead(ctx context.Context, req *mcp.CallToolRequest
 		"delivery_encoding": read.DeliveryEncoding, "mime_type": read.MIMEType,
 		"source_offset": read.SourceOffset, "next_source_offset": read.NextSourceOffset,
 		"eof": read.EOF, "sha256": read.SHA256,
+		"workspace_binding": workspaceBindingData(remote),
 	}
 	if read.Text != "" {
 		data["text"] = read.Text
@@ -103,7 +113,7 @@ func (r *Runtime) resourceArtifact(ctx context.Context, req *mcp.ReadResourceReq
 	if err != nil {
 		return nil, err
 	}
-	registered, content, err := r.artifacts.ReadAll(ctx, remote.ID, artifactID, remote.WorkspacePath, 8<<20)
+	registered, content, err := r.artifacts.ReadAll(ctx, remote.ID, artifactID, sessionProjectPath(remote), 8<<20)
 	if err != nil {
 		return nil, err
 	}

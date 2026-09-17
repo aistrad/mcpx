@@ -77,6 +77,22 @@ func TransportSessionIdleTTL(transport TransportConfig) time.Duration {
 	return d
 }
 
+// WriterLeaseTTL parses transport.writer_lease_ttl. It is bounded so a stale
+// process cannot hold a project writer indefinitely after losing connectivity.
+func WriterLeaseTTL(transport TransportConfig) time.Duration {
+	if strings.TrimSpace(transport.WriterLeaseTTL) == "" {
+		return 2 * time.Minute
+	}
+	d, err := time.ParseDuration(transport.WriterLeaseTTL)
+	if err != nil || d < 30*time.Second {
+		return 2 * time.Minute
+	}
+	if d > 24*time.Hour {
+		return 24 * time.Hour
+	}
+	return d
+}
+
 // MaxResultBytes returns tool output cap; default 200000.
 func MaxResultBytes(l LimitsConfig) int {
 	if l.MaxResultBytes <= 0 {

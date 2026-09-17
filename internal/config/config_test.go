@@ -18,6 +18,9 @@ func TestDefaultConfigUsesTransportSessionTTL(t *testing.T) {
 	if !strings.Contains(text, "transport:\n    session_idle_ttl: 24h") {
 		t.Fatalf("transport config missing:\n%s", text)
 	}
+	if !strings.Contains(text, "    writer_lease_ttl: 2m") {
+		t.Fatalf("writer lease config missing:\n%s", text)
+	}
 	if strings.Contains(text, "\nsession:") {
 		t.Fatalf("legacy session config must not be emitted:\n%s", text)
 	}

@@ -113,7 +113,7 @@ func TestProjectTaskAndArtifactRemoteSessionFlow(t *testing.T) {
 
 	registerRequest := mcpresult.Request(map[string]any{
 		"intent":            "register the test report artifact",
-		"remote_session_id": remoteSessionID, "path": "report.txt", "kind": "test_report", "name": "Go test report",
+		"remote_session_id": remoteSessionID, "path": "report.txt", "kind": "test_report", "name": "Go test report", "include_resource_link": true,
 	})
 
 	registeredResult, err := runtime.toolArtifactRegister(ctx, registerRequest)

@@ -92,3 +92,18 @@ func TestReadPathsAreHardScope(t *testing.T) {
 		}
 	}
 }
+
+func TestReadSearchRequiresExplicitPathsAndRejectsPathAlias(t *testing.T) {
+	rt := newWorkspaceRuntime(t, "demo")
+	opened := callEnvelope(t, rt.toolSession, context.Background(), map[string]any{"workspace": "demo"})
+	remoteID, _ := opened["remote_session_id"].(string)
+	for name, args := range map[string]map[string]any{
+		"missing paths": {"remote_session_id": remoteID, "view": "search", "query": "needle"},
+		"path alias":    {"remote_session_id": remoteID, "view": "search", "query": "needle", "path": "."},
+	} {
+		response := callEnvelope(t, rt.toolRead, context.Background(), args)
+		if response["status"] == "ok" {
+			t.Fatalf("%s was accepted: %+v", name, response)
+		}
+	}
+}

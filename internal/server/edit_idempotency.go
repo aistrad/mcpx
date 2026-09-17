@@ -74,7 +74,7 @@ func (r *Runtime) replayStoredEdit(envReq envelope.Request, session remotesessio
 	if stored.Error != nil {
 		return r.editToolError(envReq, session, stored.Error.applyError())
 	}
-	return r.editToolSuccess(envReq, session, stored.EditID, stored.Result, true)
+	return r.editToolSuccess(envReq, session, stored.EditID, stored.Result, true, nil)
 }
 
 func (r *Runtime) editIdempotencyConflict(envReq envelope.Request, session remotesession.Session, current, original string) (*mcp.CallToolResult, error) {
@@ -210,7 +210,8 @@ func (r *Runtime) reconcilePendingEdit(ctx context.Context, envReq envelope.Requ
 	if err != nil || stored.Error != nil || stored.EditID == "" {
 		return nil, false
 	}
-	expected, original, reconcileErr := reconcileEditResult(session.WorkspacePath, stored.Result)
+	projectRoot := sessionProjectPath(session)
+	expected, original, reconcileErr := reconcileEditResult(projectRoot, stored.Result)
 	if reconcileErr != nil {
 		return nil, false
 	}
@@ -229,7 +230,7 @@ func (r *Runtime) reconcilePendingEdit(ctx context.Context, envReq envelope.Requ
 			if item.Operation == edit.OpRename {
 				path = item.NewPath
 			}
-			absolute, err := file.Resolve(session.WorkspacePath, path)
+			absolute, err := file.Resolve(projectRoot, path)
 			if err != nil {
 				return recoveryFailure()
 			}
@@ -258,7 +259,7 @@ func (r *Runtime) reconcilePendingEdit(ctx context.Context, envReq envelope.Requ
 		if err := r.idempotency.Complete(ctx, key, fingerprint, idempotency.StateSucceeded, encoded, claim.Record.Metadata); err != nil {
 			return recoveryFailure()
 		}
-		result, _ := r.editToolSuccess(envReq, session, stored.EditID, stored.Result, true)
+		result, _ := r.editToolSuccess(envReq, session, stored.EditID, stored.Result, true, nil)
 		return result, true
 	}
 	if !original {

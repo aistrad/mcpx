@@ -2,7 +2,9 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -47,6 +49,12 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 	if workspaceName == "" {
 		workspaceName, _ = envReq.Payload["workspace"].(string)
 	}
+	explicitProjectRoot := stringPayload(envReq.Payload, "project_root")
+	projectRootInput := explicitProjectRoot
+	legacyIdentityPath := stringPayload(envReq.Payload, "git_identity_path")
+	if remoteID == "" && projectRootInput == "" {
+		projectRootInput = legacyIdentityPath
+	}
 	if remoteID != "" {
 		existing, err := r.remote.Get(ctx, principal, remoteID)
 		if err != nil {
@@ -54,25 +62,72 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 		}
 		session = existing
 		workspaceName = session.WorkspaceName
+		registered, ok := r.reg.Get(workspaceName)
+		if !ok {
+			return r.remoteError(envReq, remoteID, workspaceName, fmt.Errorf("%w: %q", errWorkspaceNotFound, workspaceName))
+		}
+		selected := sessionProjectPath(session)
+		if projectRootInput != "" {
+			resolved, resolveErr := resolveProjectRoot(ctx, registered.Path, projectRootInput, registered.ProjectRootRequired)
+			if resolveErr != nil {
+				return r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_INVALID", resolveErr.Error())
+			}
+			if explicitProjectRoot != "" && legacyIdentityPath != "" {
+				legacyResolved, legacyErr := resolveProjectRoot(ctx, registered.Path, legacyIdentityPath, registered.ProjectRootRequired)
+				if legacyErr != nil {
+					return r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_INVALID", legacyErr.Error())
+				}
+				if filepath.Clean(legacyResolved) != filepath.Clean(resolved) {
+					return r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_MISMATCH", "project_root and git_identity_path must select the same project root")
+				}
+			}
+			if filepath.Clean(resolved) != filepath.Clean(selected) {
+				return r.terminalError(envReq, session.ID, session.WorkspaceName, "PROJECT_ROOT_MISMATCH", "project_root does not match the Remote Session binding")
+			}
+		}
 	} else {
-		created, err := r.createRemoteSession(ctx, principal, envReq, workspaceName)
+		registered, ok := r.reg.Get(strings.TrimSpace(workspaceName))
+		if !ok {
+			return r.remoteError(envReq, "", workspaceName, fmt.Errorf("%w: %q", errWorkspaceNotFound, workspaceName))
+		}
+		projectPath, resolveErr := resolveProjectRoot(ctx, registered.Path, projectRootInput, registered.ProjectRootRequired)
+		if resolveErr != nil {
+			if errors.Is(resolveErr, errProjectRootRequired) {
+				return r.projectRootRequiredError(envReq, "", workspaceName, registered.Path)
+			}
+			return r.terminalError(envReq, "", workspaceName, projectRootErrorCode(resolveErr), resolveErr.Error())
+		}
+		if explicitProjectRoot != "" && legacyIdentityPath != "" {
+			legacyResolved, legacyErr := resolveProjectRoot(ctx, registered.Path, legacyIdentityPath, registered.ProjectRootRequired)
+			if legacyErr != nil {
+				return r.terminalError(envReq, "", workspaceName, "PROJECT_ROOT_INVALID", legacyErr.Error())
+			}
+			if filepath.Clean(legacyResolved) != filepath.Clean(projectPath) {
+				return r.terminalError(envReq, "", workspaceName, "PROJECT_ROOT_MISMATCH", "project_root and git_identity_path must select the same project root")
+			}
+		}
+		created, err := r.createRemoteSession(ctx, principal, envReq, workspaceName, projectPath)
 		if err != nil {
 			return r.remoteError(envReq, "", workspaceName, err)
 		}
 		session = created.Session
 	}
 
-	wsPath := session.WorkspacePath
+	wsPath := sessionProjectPath(session)
 	var gitIdentity *workspaceidentity.GitIdentity
-	if runID := stringPayload(envReq.Payload, "run_id"); runID != "" || stringPayload(envReq.Payload, "git_identity_path") != "" {
+	if runID := stringPayload(envReq.Payload, "run_id"); runID != "" || legacyIdentityPath != "" {
 		if err := r.reconcileWorkspaceTransition(ctx, session.ID, runID); err != nil {
 			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_TRANSITION_UNVERIFIED", err.Error())
 		}
-		identityPath := stringPayload(envReq.Payload, "git_identity_path")
-		if identityPath == "" {
-			identityPath = "."
+		identityBase := wsPath
+		identityPath := "."
+		if remoteID != "" && stringPayload(envReq.Payload, "project_root") == "" && legacyIdentityPath != "" {
+			// Existing clients used git_identity_path to inspect a nested Git
+			// root without changing the Session's project scope.
+			identityBase = session.WorkspacePath
+			identityPath = legacyIdentityPath
 		}
-		resolved, err := workspacefile.Resolve(wsPath, identityPath)
+		resolved, err := workspacefile.Resolve(identityBase, identityPath)
 		if err != nil {
 			return r.terminalError(envReq, session.ID, session.WorkspaceName, "WORKSPACE_IDENTITY_UNAVAILABLE", "identity target must be inside registered workspace")
 		}
@@ -193,11 +248,15 @@ func (r *Runtime) toolSessionOpen(ctx context.Context, req *mcp.CallToolRequest)
 			"id": session.ID, "role": session.Role, "status": session.Status,
 			"version": session.Version, "label": session.Label, "description": session.Description,
 			"workspace_name": session.WorkspaceName, "workspace_path": session.WorkspacePath,
+			"project_path":  wsPath,
+			"project_bound": session.ProjectBound,
 			"approval_mode": r.workspaceApprovalMode(session.WorkspaceName),
 		},
 		"workspace": map[string]any{
 			"name": session.WorkspaceName, "path": session.WorkspacePath,
-			"git_head": gitHead, "tree_digest": treeDigest,
+			"registered_root": session.WorkspacePath, "project_root": wsPath,
+			"binding_state": map[bool]string{true: "bound", false: "legacy_unbound"}[session.ProjectBound],
+			"git_head":      gitHead, "tree_digest": treeDigest,
 			"approval_mode": r.workspaceApprovalMode(session.WorkspaceName),
 		},
 		"revisions":       revisions,

@@ -818,6 +818,15 @@ func (t *Task) Wait(ctx context.Context) bool {
 	}
 }
 
+// Done exposes a read-only completion signal for Runtime coordination such as
+// renewing a workspace writer lease. Callers cannot close or replace it.
+func (t *Task) Done() <-chan struct{} {
+	if t == nil {
+		return nil
+	}
+	return t.done
+}
+
 // WriteStdin safely forwards interactive input to a live Task. stdin is not
 // persisted and is unavailable after a server restart.
 func (t *Task) WriteStdin(content string) error {

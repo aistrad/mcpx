@@ -162,7 +162,14 @@ func (r *Runtime) instrumentTool(name string, handler mcp.ToolHandler) mcp.ToolH
 		arguments := mcpresult.Arguments(req)
 		observedArguments := observationArguments(name, arguments)
 		var embeddedActivityErr error
-		if !internalOperationStep && observationParseErr == nil {
+		var schemaErr error
+		if schemaErr = r.validateRegisteredToolArgumentsContext(callCtx, name, arguments); schemaErr != nil {
+			if observationParseErr == nil {
+				result, err = r.terminalErrorForContext(callCtx, observationRequest, observationRequest.RemoteSessionID, observationRequest.Workspace, "INVALID_ARGUMENT", schemaErr.Error())
+			} else {
+				result = mcpresult.NewError("INVALID_ARGUMENT: " + schemaErr.Error())
+			}
+		} else if !internalOperationStep && observationParseErr == nil {
 			embeddedActivityErr = r.recordEmbeddedAgentActivity(callCtx, observationRequest, runtime, received.UTC())
 		}
 		if !internalOperationStep && observationParseErr == nil && embeddedActivityErr == nil && r.observation != nil {
@@ -172,7 +179,11 @@ func (r *Runtime) instrumentTool(name string, handler mcp.ToolHandler) mcp.ToolH
 			_ = r.observation.RecordToolStarted(callCtx, name, observationRequest, observedArguments)
 		}
 
-		if embeddedActivityErr != nil {
+		if schemaErr != nil {
+			// The structured validation response above is already final. Do not
+			// call a handler after rejecting an unknown or malformed field.
+			err = nil
+		} else if embeddedActivityErr != nil {
 			result = mcpresult.NewError("INVALID_ACTIVITY: " + embeddedActivityErr.Error())
 			err = nil
 		} else if !isOperationChild(callCtx) && r.operations != nil && asyncEligibleTool(name) && executionMode(req) == "async" && !isEphemeralRuntimeArguments(arguments) && observationParseErr == nil {

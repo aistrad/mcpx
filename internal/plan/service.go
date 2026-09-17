@@ -689,7 +689,7 @@ func validateEvidenceRef(ctx context.Context, tx *sql.Tx, remoteSessionID, kind,
 		return "", nil
 	case EvidenceSource:
 		var workspaceRoot string
-		if err := tx.QueryRowContext(ctx, `SELECT workspace_path FROM remote_sessions WHERE id = ?`, remoteSessionID).Scan(&workspaceRoot); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(NULLIF(project_path,''), workspace_path) FROM remote_sessions WHERE id = ?`, remoteSessionID).Scan(&workspaceRoot); err != nil {
 			return "", fmt.Errorf("%w: source session: %v", ErrEvidence, err)
 		}
 		resolved, err := file.Resolve(workspaceRoot, referenceID)

@@ -18,22 +18,23 @@ import (
 // the standard destructiveHint.
 var cleanEditSafetyMeta = mcp.Meta{
 	"mcpx/safety": map[string]any{
-		"classification":    "constrained_workspace_file_mutation",
-		"approval":          "web_model_user_confirmation_required_for_move_out",
-		"scope":             "registered_workspace_root",
-		"target":            "regular_files_only_for_create_update_rename",
-		"revision_guard":    "sha256",
-		"symlink_policy":    "reject",
-		"idempotency":       "supported",
-		"audit":             "durable",
-		"execution":         "filesystem_only",
-		"shell_bypass":      "forbidden",
-		"approval_evidence": []string{"purpose", "explicit_paths", "base_sha256", "server_snapshot"},
-		"server_rejections": []string{"path_escape", "symlink", "non_regular_file", "stale_revision", "file_policy_denied", "move_out_required"},
+		"classification":     "constrained_workspace_file_mutation",
+		"approval":           "web_model_user_confirmation_required_for_move_out",
+		"scope":              "session_project_root",
+		"project_root_bound": true,
+		"target":             "regular_files_only_for_create_update_rename",
+		"revision_guard":     "sha256",
+		"symlink_policy":     "reject",
+		"idempotency":        "supported",
+		"audit":              "durable",
+		"execution":          "filesystem_only",
+		"shell_bypass":       "forbidden",
+		"approval_evidence":  []string{"purpose", "explicit_paths", "base_sha256", "server_snapshot"},
+		"server_rejections":  []string{"path_escape", "symlink", "non_regular_file", "stale_revision", "file_policy_denied", "move_out_required"},
 	},
 }
 
-// edit only supports create/update/rename inside the registered workspace.
+// edit only supports create/update/rename inside the Session's bound project root.
 // Removal is a separate confirmed workflow, so edit itself is non-destructive.
 var cleanEditToolAnnotation = toolAnnotation{
 	ReadOnly: false, Destructive: false, Idempotent: true, OpenWorld: false,
@@ -113,6 +114,7 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 		"remote_session_id":            remoteSession,
 		"action":                       enumSchema("会话生命周期动作；省略时默认 open/resume，传 mode 时可省略并推导 close；remote_session_id 丢失时显式 list 发现已有会话", "open", "list", "close"),
 		"workspace":                    workspace,
+		"project_root":                 stringSchema("注册 Workspace 内明确选择的项目或 Git Worktree 根；Git 开发会话必须提供，Session 创建后不可切换"),
 		"query":                        stringSchema("list 时按 label、description 或 Session ID 搜索"),
 		"status":                       stringSchema("list 时按状态过滤；多个状态用逗号分隔"),
 		"cursor":                       stringSchema("list 分页游标"),
@@ -150,7 +152,7 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 		"remote_session_id":    remoteSession,
 		"view":                 enumSchema("读取视图", "file", "search", "list", "context"),
 		"path":                 readPath,
-		"mode":                 enumSchema("文件读取模式", "window", "full"),
+		"mode":                 enumSchema("文件读取或旧 context_query 兼容模式；由 view 决定适用值", "window", "full", "smart", "exact", "token"),
 		"offset":               numberSchema("0-based 行偏移"),
 		"limit":                numberSchema("行数或结果数量限制"),
 		"items":                readItems,
@@ -297,6 +299,8 @@ func (r *Runtime) registerCleanCoreTools(s *mcp.Server) {
 		},
 		"next":         stringSchema("下一步动作；completed 时通常留空"),
 		"phase":        stringSchema("可选的阶段名称，例如 implementation、verification、release"),
+		"task_scope":   stringSchema("本次验证覆盖的任务或对象范围；与 verification evidence 一起使用"),
+		"evidence":     arraySchema(planEvidenceSchema(), "本次任务的结构化验证证据；verification 阶段完成时必填"),
 		"related_tool": stringSchema("可选的相关 MCPX 工具名"),
 	}, []string{"remote_session_id", "current"}, sessionToolAnnotation), r.toolProgress)
 

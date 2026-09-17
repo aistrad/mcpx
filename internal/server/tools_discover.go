@@ -47,11 +47,12 @@ func (r *Runtime) skillToolList(ctx context.Context, req *mcp.CallToolRequest) (
 	if fail != nil {
 		return fail, nil
 	}
-	effective := r.effectiveConfig(session.WorkspacePath)
+	projectRoot := sessionProjectPath(session)
+	effective := r.effectiveConfig(projectRoot)
 	if !effective.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
-	items := skill.LoadAll(effective.Discovery.Skills.Dirs, session.WorkspacePath)
+	items := skill.LoadAll(effective.Discovery.Skills.Dirs, projectRoot)
 	items = filterSkillsByQuery(items, strings.TrimSpace(stringPayload(envReq.Payload, "query")))
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, map[string]any{"skills": compactSkillInventory(items)})
 }
@@ -61,12 +62,13 @@ func (r *Runtime) skillToolDescribe(ctx context.Context, req *mcp.CallToolReques
 	if fail != nil {
 		return fail, nil
 	}
-	effective := r.effectiveConfig(session.WorkspacePath)
+	projectRoot := sessionProjectPath(session)
+	effective := r.effectiveConfig(projectRoot)
 	if !effective.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
 	name := strings.TrimSpace(stringPayload(envReq.Payload, "name"))
-	items := skill.LoadAll(effective.Discovery.Skills.Dirs, session.WorkspacePath)
+	items := skill.LoadAll(effective.Discovery.Skills.Dirs, projectRoot)
 	sk, ok := skill.Find(items, name)
 	if !ok {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "SKILL_NOT_FOUND", fmt.Sprintf("skill %q was not found", name))
@@ -75,7 +77,7 @@ func (r *Runtime) skillToolDescribe(ctx context.Context, req *mcp.CallToolReques
 	revision, _ := descriptor["revision"].(string)
 	r.upsertDiscoveryLease(discoveryLease{
 		Revision: revision, RemoteSessionID: session.ID, PrincipalID: principal.ID,
-		WorkspacePath: session.WorkspacePath, Kind: "skill", Object: name,
+		WorkspacePath: projectRoot, Kind: "skill", Object: name,
 	})
 	risk := skillExecutionRisk(sk)
 	result := map[string]any{
@@ -142,12 +144,13 @@ func (r *Runtime) preflightSkillToolCall(ctx context.Context, req *mcp.CallToolR
 	if fail != nil {
 		return fail, nil
 	}
-	effective := r.effectiveConfig(remote.WorkspacePath)
+	projectRoot := sessionProjectPath(remote)
+	effective := r.effectiveConfig(projectRoot)
 	if !effective.Discovery.Skills.Enabled {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_DISABLED", "skills are disabled")
 	}
 	name := strings.TrimSpace(stringPayload(envReq.Payload, "name"))
-	sk, ok := skill.Find(skill.LoadAll(effective.Discovery.Skills.Dirs, remote.WorkspacePath), name)
+	sk, ok := skill.Find(skill.LoadAll(effective.Discovery.Skills.Dirs, projectRoot), name)
 	if !ok {
 		return r.terminalError(envReq, remote.ID, remote.WorkspaceName, "SKILL_NOT_FOUND", fmt.Sprintf("skill %q was not found", name))
 	}
@@ -195,10 +198,11 @@ func (r *Runtime) mcpToolList(ctx context.Context, req *mcp.CallToolRequest) (*m
 	if fail != nil {
 		return fail, nil
 	}
-	if !r.effectiveConfig(session.WorkspacePath).Discovery.MCP.Enabled {
+	projectRoot := sessionProjectPath(session)
+	if !r.effectiveConfig(projectRoot).Discovery.MCP.Enabled {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "MCP_SERVER_UNAVAILABLE", "upstream MCP is disabled")
 	}
-	manager, err := r.mcpManagerForWorkspace(session.WorkspacePath)
+	manager, err := r.mcpManagerForWorkspace(projectRoot)
 	if err != nil {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "MCP_SERVER_UNAVAILABLE", err.Error())
 	}
@@ -245,12 +249,13 @@ func (r *Runtime) mcpToolDescribe(ctx context.Context, req *mcp.CallToolRequest)
 	if fail != nil {
 		return fail, nil
 	}
-	if !r.effectiveConfig(session.WorkspacePath).Discovery.MCP.Enabled {
+	projectRoot := sessionProjectPath(session)
+	if !r.effectiveConfig(projectRoot).Discovery.MCP.Enabled {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "MCP_SERVER_UNAVAILABLE", "upstream MCP is disabled")
 	}
 	serverName := strings.TrimSpace(stringPayload(envReq.Payload, "server"))
 	toolName := strings.TrimSpace(stringPayload(envReq.Payload, "tool"))
-	manager, err := r.mcpManagerForWorkspace(session.WorkspacePath)
+	manager, err := r.mcpManagerForWorkspace(projectRoot)
 	if err != nil {
 		return r.terminalError(envReq, session.ID, session.WorkspaceName, "MCP_SERVER_UNAVAILABLE", err.Error())
 	}
@@ -269,7 +274,7 @@ func (r *Runtime) mcpToolDescribe(ctx context.Context, req *mcp.CallToolRequest)
 	revision := mcpRevision([]*mcp.Tool{upstream})
 	r.upsertDiscoveryLease(discoveryLease{
 		Revision: revision, RemoteSessionID: session.ID, PrincipalID: principal.ID,
-		WorkspacePath: session.WorkspacePath, Kind: "mcp", Object: serverName + "/" + toolName,
+		WorkspacePath: projectRoot, Kind: "mcp", Object: serverName + "/" + toolName,
 	})
 	risk := mcpExecutionRisk(upstream)
 	return r.remoteResult(envReq, session.ID, session.WorkspaceName, map[string]any{
@@ -402,7 +407,7 @@ func (r *Runtime) latestDiscoveryLease(session remotesession.Session, principalI
 	r.discoveryMu.Lock()
 	defer r.discoveryMu.Unlock()
 	for _, lease := range r.discoveries {
-		if lease.RemoteSessionID == session.ID && lease.PrincipalID == principalID && lease.WorkspacePath == session.WorkspacePath && lease.Kind == kind && lease.Object == object {
+		if lease.RemoteSessionID == session.ID && lease.PrincipalID == principalID && lease.WorkspacePath == sessionProjectPath(session) && lease.Kind == kind && lease.Object == object {
 			return lease, true
 		}
 	}

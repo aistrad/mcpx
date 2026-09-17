@@ -97,6 +97,11 @@ func MatchCommand(rules config.CommandRules, command string) Decision {
 	return AnalyzeCommand(rules, command).Decision
 }
 
+// IsReadonlyCommand exposes the same conservative classifier used by the
+// automatic read-only policy so callers can coordinate non-mutating work
+// without maintaining a second command vocabulary.
+func IsReadonlyCommand(command string) bool { return isReadonlyCommand(command) }
+
 // matchSegment evaluates a single command segment without control operators.
 func matchSegment(rules config.CommandRules, segment string) Decision {
 	if matchAny(rules.Deny, segment) {
